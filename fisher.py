@@ -641,9 +641,7 @@ class ValueFactorLib():
         # 2. 计算相对市收率N个月的移动平均值的N个月的标准差，并据此计算布林带上下轨（N个月的移动平均值+/-N个月移动平均的标准差）。N = 24
         for i in range(length):
             s = df.iloc[i,:]
-            if s.min() < 0:
-                pass
-            else:
+            if s.min() >= 0:
                 # tmp_list 是24个月的相对市收率均值
                 tmp_list = []
                 for j in range(24):
@@ -671,12 +669,62 @@ class ValueFactorLib():
             stock_list.append(stock)
 
         return stock_list
-
+    
     @staticmethod
-    def fun_get_low_ps(statsDate=None):
+    def fun_get_not_relative_ps(statsDate=None):
+        def __fun_get_ps(statsDate, deltamonth):
+            __df = get_fundamentals(query(valuation.code, valuation.ps_ratio), date = (statsDate - dt.timedelta(30*deltamonth)))
+            __df.rename(columns={'ps_ratio':deltamonth}, inplace=True)
+            return __df
+
+        for i in range(48):
+            df1 = __fun_get_ps(statsDate, i)
+            if i == 0:
+                df = df1
+            else:
+                df = df.merge(df1, on='code')
+
+        df.index = list(df['code'])
+        df = df.drop(['code'], axis=1)
+
+        df = df.fillna(value=0, axis=0)
+        # 1. 计算相对市收率，相对市收率等于个股市收率除以全市场的市收率，这样处理的目的是为了剔除市场估值变化的影响
+        for i in range(len(df.columns)):
+            s = df.iloc[:,i]
+            median = s.median()
+            df.iloc[:,i] = s / median
+
+        length, stock_list, stock_dict = len(df), list(df.index), {}
+        not_relative_stocks = []
+        # 2. 计算相对市收率N个月的移动平均值的N个月的标准差，并据此计算布林带上下轨（N个月的移动平均值+/-N个月移动平均的标准差）。N = 24
+        for i in range(length):
+            s = df.iloc[i,:]
+            
+            # tmp_list 是24个月的相对市收率均值
+            tmp_list = []
+            for j in range(24):
+                tmp_list.append(s[j:j+24].mean())
+            # mean_value 是最近 24个月的相对市收率均值
+            mean_value = tmp_list[0]
+            # std_value 是相对市收率24个月的移动平均值的24个月的标准差
+            std_value = np.std(tmp_list)
+            tmp_dict = {}
+            # (mean_value - std_value)，是布林线下轨（此处定义和一般布林线不一样，一般是 均线 - 2 倍标准差）
+            '''
+            在2倍标准差之外的高或者低，都认为不在合理范围内。
+            '''
+            if s[0] < (mean_value - 2.0*std_value) or s[0] > (mean_value + 2.0*std_value):
+                # 记录 相对市收率均值 / 当期相对市收率
+                # stock_dict[stock_list[i]] = (1.0*mean_value/s[0])
+                not_relative_stocks.append(stock_list[i])
+
+        return not_relative_stocks
+    
+    @staticmethod
+    def get_sorted_ps(startDate):
         df = get_fundamentals(
             query(valuation.code, valuation.ps_ratio),
-            date = statsDate
+            date = startDate
         )
 
         # 根据 sp 去极值、中性化、标准化后，跨行业选最佳的标的
@@ -689,7 +737,7 @@ class ValueFactorLib():
         df = df.drop(['ps_ratio'], axis=1)
 
         for industry in industry_list:
-            tmpDict = QuantLib.fun_get_factor(df, 'SP', industry, 2, statsDate).to_dict()
+            tmpDict = QuantLib.fun_get_factor(df, 'SP', industry, 2, startDate).to_dict()
             for stock in tmpDict:
                 if stock in sp_ratio:
                     sp_ratio[stock] = max(sp_ratio[stock],tmpDict[stock])
@@ -703,168 +751,28 @@ class ValueFactorLib():
             stock = idx[0]
             stock_list.append(stock)
 
-        return stock_list[:int(len(stock_list)*0.5)]
-    
+        return stock_list 
 
-class Fisher():
-    def __init__(self):
-        self.factorlib = ValueFactorLib()
+    @staticmethod
+    def fun_get_low_ps(startDate=None):
+        stock_list = ValueFactorLib.get_sorted_ps(startDate=startDate)
+        return stock_list[:int(len(stock_list)*0.4)]
     
-    def fun_get_tdy_stock_list(self, current_dt):
+    @staticmethod
+    def fun_get_high_ps(startDate=None):
+        stock_list = ValueFactorLib.get_sorted_ps(startDate=startDate)
+        return stock_list[int(len(stock_list)*0.6):]
+    
+    @staticmethod
+    def fun_get_tdy_stock_list(current_dt):
         now_date = current_dt
         statsDate = now_date - datetime.timedelta(1)
         stocks = ValueFactorLib.fun_get_stock_list(now_date=now_date,statsDate=statsDate)
         return stocks
+    
 
 
-# 导入函数库
-import statsmodels.api as sm
-import random
 
-class RSRSLib():
-    class RsPair(dict):
-        def __init__(self,ans=[],r2s=[],date='2005-01-01'):
-                self.ans = ans
-                self.r2s = r2s
-                self.date = date
-        
-        def __getattr__(self, key):
-            try:
-                return self[key]
-            except KeyError:
-                raise AttributeError(r"'RsPair' object has no attribute '%s'" % key)
-        
-        def __setattr__(self, key, value):
-            import datetime
-            if isinstance(value,datetime.date):
-                value = str(value)
-            self[key] = value
-        
-    def __init__(self,buy_ratio=0.7,sell_ratio=-0.7):
-        self.rsrses = {}
-        self.buy = buy_ratio
-        self.sell = sell_ratio
-
-    def to_file(self,path='history_rsrs.json'):
-        write_file(path, str(self.rsrses))
-
-    def load_rsrs_from(self,path='history_rsrs.json'):
-        self.rsrses = {}
-        try:
-            data = read_file(path)
-            str_data = str(data,'utf-8')
-            str_data = str_data.replace("'", '"')
-            dict_data= json.loads(str_data)
-            rsrses = {}
-            for d in dict_data:
-                rs = self.RsPair(**dict_data[d])
-                rsrses[d] = rs
-            self.rsrses = rsrses
-        except Exception as e:
-            log.info('加载rsrs文件失败。'+str(e))
-        
-        
-    
-    @staticmethod
-    def rsrs(prices):
-        highs = prices.high
-        lows = prices.low
-        X = sm.add_constant(lows)
-        model = sm.OLS(highs, X)
-        fit = model.fit()
-        # print('fit params:',fit.params)
-        beta = fit.params.low
-        #计算r2
-        r2=fit.rsquared
-        return beta,r2
-    
-    def calc_rsrs_last(self,prices,N=18):
-        ans = []
-        r2s = []
-        for i in range(len(prices))[N:]:
-            parts = prices.iloc[i-N+1:i+1]
-            beta,r2 = self.rsrs(parts)
-            
-            ans.append(beta)
-            #计算r2
-            r2s.append(r2)
-        return ans,r2s
-    
-    def calc_zscore_rightdev(self,section,beta,r2):
-        # 计算均值序列
-        mu = np.mean(section)
-        # 计算标准化RSRS指标序列
-        sigma = np.std(section)
-        zscore = (section[-1]-mu)/sigma  
-        #计算右偏RSRS标准分
-        zscore_rightdev= zscore*beta*r2
-        
-        return zscore_rightdev
-    
-    def calc_sec_rsrs_from(self,security,begin='2005-01-05',end=None, N=18):
-        log.info('计算'+str(begin)+'日至'+str(end)+'日的RSRS斜率指标')
-        if str(begin) >= str(end):
-            return None,None
-        
-        prices = get_price(security, begin, end, '1d', ['high', 'low'])
-        size = len(prices.dropna())
-        if size > 0:
-            return self.calc_rsrs_last(prices.dropna(),N)
-        
-        return None,None
-    
-    def init_sec_rsrs(self,sec,end_date):
-        log.info('init sec rsrs[%s].'%(sec))
-        if sec in self.rsrses:
-            rs = self.RsPair(**self.rsrses[sec])
-        else:
-            rs = self.RsPair()
-            self.rsrses[sec] = rs
-        # 计算2005年1月5日至回测开始日期的RSRS斜率指标
-        ans,ans_rightdev = self.calc_sec_rsrs_from(sec, rs['date'], end_date)
-        if ans and ans_rightdev:
-            self.rsrses[sec] = self.RsPair(ans=ans,r2s=ans_rightdev,date=end_date)
-    
-        
-    def is_sec_buy_or_sell(self,sec,N=18,M=1100):
-        prices = attribute_history(sec, N, '1d', ['high', 'low'])
-        if len(prices.dropna()) == 0:
-            log.info('no data for sec'+sec)
-            return 'n'
-            
-        beta, r2 = self.rsrs(prices.dropna())
-        self.rsrses[sec].ans.append(beta)
-        self.rsrses[sec].r2s.append(r2)
-        
-        section = self.rsrses[sec].ans[-M:]
-        zscore_rightdev = self.calc_zscore_rightdev(section,beta,r2)
-        
-    
-        # 如果上一时间点的RSRS斜率大于买入阈值, 则全仓买入
-        if zscore_rightdev > self.buy:
-            # 记录这次买入
-            log.info("标准化RSRS斜率[%f]大于买入阈值, 买入 %s" % (zscore_rightdev,sec))
-            # 用所有 cash 买入股票
-            return 'b'
-        # 如果上一时间点的RSRS斜率小于卖出阈值, 则空仓卖出
-        if zscore_rightdev < self.sell:
-            # 记录这次卖出
-            log.info("标准化RSRS斜率[%f]小于卖出阈值, 卖出 %s" % (zscore_rightdev,sec))
-            # 卖出所有股票,使这只股票的最终持有量为0
-            return 's'
-        
-        log.info("股票[%s]标准化RSRS斜率[%f]中性。" % (sec,zscore_rightdev))
-        return 'n'   # 不处理
-    
-    def is_hs300_buy(self):
-        return self.is_sec_buy_or_sell('000300.XSHG')
-    
-    def judge_today_buy_or_sell(self,sec,now_date,N=18,M=1100):
-        self.init_sec_rsrs(sec,now_date)
-        return self.is_sec_buy_or_sell(sec,N,M)
-    
-    def is_hs300_buy_tdy(self,now_date):
-        return self.judge_today_buy_or_sell('000300.XSHG',now_date)
 
 class StopManager():
     # 1 是否止损 
@@ -872,7 +780,7 @@ class StopManager():
     # 3 一段时间内不再购买
     # 4 按先后排序
     def __init__(self):
-        self.stop_ratio = 0.9 # 跌10%止损
+        self.stop_ratio = 0.1 # 跌10%止损
         self.stop_ndays = 20
         self.blacks = {}
         self.sorted_blacks = []
@@ -886,17 +794,17 @@ class StopManager():
     
     def try_close(self, p):
         # p:Position对象
-        if self.is_stop(p):
+        if self.is_stop(p,self.stop_ratio):
             log.info('股票[%s]发生止损[%f,%f]。'%(p.security,p.price,p.avg_cost))
             order_target(p.security, 0)
             self.record(p.security)
     
-    def is_stop(self, position):
+    def is_stop(self, position,ratio=0.08):
         # position:Position对象
-        return position.price <= self.stop_ratio * position.avg_cost
+        return position.price <= (1-ratio) * position.avg_cost
     
     def is_lost(self, position):
-        return position.price <= position.avg_cost
+        return self.is_stop(position,0)
     
     def record(self,sec):
         # 记录sec,date
@@ -1096,43 +1004,79 @@ def print_with_name(stocks):
 
 
 class Trader():
-    # 买入卖出
     def __init__(self, context):
         self.context = context
     
-    
-    def try_close_positions_rsrs(self,context):
-        hold_stock = list(context.portfolio.positions.keys())
-        for s in hold_stock:
-            bs = g.rsrslib.judge_today_buy_or_sell(s,context.previous_date)
-            if bs == 's':
-                order_target(s,0)
-
-    def close_lost_positions(self,context):
-        for s in context.portfolio.positions:
-            if g.stopper.is_lost(context.portfolio.positions[s]):
-                order_target(s,0)
+    def positions_num(self):
+        return len(list(self.context.portfolio.positions.keys()))
+        
 
     def market_open(self):
-        # 取得当前的现金
-        # cash = context.portfolio.available_cash
-        g.stopper.check_stop(self.context)
+        # 买入卖出
+        #  低估值浮亏加仓，高估减仓测率
+        # 思路：大盘在地位时，低估值股票，越跌越加；大盘高估时，越长越减。大盘中间时，看个股估值。
+        
+        # 简单思路，选取股票，只要在低估中继续持有，高估卖出。
 
-        bs = g.rsrslib.is_hs300_buy_tdy(self.context.previous_date)
-        if bs == 'b':
-            log.info("市场风险在合理范围")
-            self.check_for_buy(self.context)
-        elif (bs == 's'):
-            log.info("市场风险过大，清空所有存在风险的个股。")
-            self.check_for_sell()
+        self.check_for_sell()
+
+        if self.positions_num() >= g.stock_num:
+            log.info('持仓数量大于限仓数量，不开仓。')
+            return
+        
+        self.check_for_buy()
+
     
     def check_for_sell(self):
         if len(list(self.context.portfolio.positions.keys())) <= 0:
             log.info("没有持仓，无需平仓。")
             return
 
-        self.close_lost_positions(self.context)
-        self.try_close_positions_rsrs(self.context)
+        # 检查止损
+        g.stopper.check_stop(self.context)
+
+        # 如果高估，卖出；
+        for p in self.context.portfolio.positions:
+            if self.is_stock_too_high(p):
+                order_target(p, 0)
+    
+    def is_stock_too_high(self,stock):
+        if not hasattr(self,'not_relateive_low_stocks') or self.not_relateive_low_stocks is None:
+            self.not_relateive_low_stocks = ValueFactorLib.fun_get_not_relative_ps(statsDate=self.context.previous_date)
+
+        if stock in self.not_relateive_low_stocks:
+            log.info('[%s]在相对高估股票中'%(stock))
+            return True
+
+        if not hasattr(self,'high_ps_stocks') or self.high_ps_stocks is None:
+            self.high_ps_stocks = ValueFactorLib.fun_get_high_ps(startDate=self.context.previous_date)
+        
+        if stock in self.high_ps_stocks:
+            log.info('[%s]在高PS股票中'%(stock))
+            return True
+        
+        return False
+    
+    # 策部略选股买卖分    
+    def check_for_buy(self):
+        if self.positions_num() >= g.stock_num:
+            log.info('持仓数量大于等于最大允许持仓数量，不新增仓位。')
+            return
+
+        g.stocks = ValueFactorLib.fun_get_tdy_stock_list(self.context.current_dt)
+
+        g.stocks = g.stopper.filter_and_sort(g.stocks, self.context.current_dt)
+        
+        hold_stock = list(self.context.portfolio.positions.keys())
+        # 买入股票
+        buys = self.choose_buy_stocks(self.context)
+        log.info('总共选出%s只股票'%len(buys))
+        # print_with_name(buys)
+
+        if len(buys) <= 0:
+            return
+        
+        self.trade_with_risk_ctrl(buys)
 
     
     def ajust_hold_positions(self,portfilo_ratio,will_spend):
@@ -1142,7 +1086,6 @@ class Trader():
         for s in self.context.portfolio.positions:
             if s not in portfilo_ratio:
                 log.info('持仓[%s]不再组合中，全部清空。'%(s))
-                # need_sells[s] = 0
                 order_target(s,0)
                 continue
 
@@ -1197,13 +1140,6 @@ class Trader():
         hold_stock = list(context.portfolio.positions.keys())
         
         for s in hold_stock:
-            # bs = g.rsrslib.judge_today_buy_or_sell(s,context.previous_date)
-            # if bs == 'b':
-            #     buys.append(s)
-            
-            # if bs == 's':
-            #     if s in hold_stock:
-            #         order_target(s,0)
             buys.append(s)  # 大盘有利，持有的仓位继续持有，不看个股rs。
 
         log.info('目前持有股票数量[%d],还需再选[%d]。'%(len(buys), g.stock_num-len(buys)))
@@ -1214,40 +1150,11 @@ class Trader():
 
             if s in hold_stock:
                 continue
-            
-            bs = g.rsrslib.judge_today_buy_or_sell(s,context.previous_date)
-            if bs == 'b':
-                buys.append(s)
+            buys.append(s)
+            log.info('额外选出股票[%s]'%(s))
+            print_with_name([s])
             
         return buys
-        
-        
-    # 策部略选股买卖分    
-    def check_for_buy(self,context):
-        # self.try_close_positions_rsrs(context)
-        hold_stock = list(context.portfolio.positions.keys())
-        cnt = len(hold_stock)
-        if cnt >= g.stock_num:
-            log.info('持仓数量大于等于最大允许持仓数量，不新增仓位。')
-            return
-
-        if context.portfolio.available_cash <= context.portfolio.total_value*0.05:
-            log.info('我们可能资金不足，不开仓[cash:%d total:%d]。'%(context.portfolio.available_cash,context.portfolio.total_value))
-            return
-        
-        g.stocks = g.fisher.fun_get_tdy_stock_list(context.current_dt)
-
-        g.stocks = g.stopper.filter_and_sort(g.stocks,context.current_dt)
-        
-        # 买入股票
-        buys = self.choose_buy_stocks(context)
-        log.info('总共选出%s只股票'%len(buys))
-        print_with_name(buys)
-
-        if len(buys) <= 0:
-            return
-        
-        self.trade_with_risk_ctrl(buys)
 
 
 
@@ -1274,26 +1181,13 @@ def initialize(context):
       # 收盘后运行
     run_daily(after_market_close, time='after_close', reference_security='000300.XSHG')
 
-    # 设置RSRS指标中N, M的值
-    g.N = 18
-    g.M = 1100
     g.init = True
     g.stock_num = 5
     
     g.security = '000300.XSHG'
  
-    # 买入阈值
-    g.buy = 0.7
-    g.sell = -0.7
-    
-    g.last_update_dt = None
     g.stocks = None
     
-    log.info('begin to init rsrses...')
-    g.rsrslib = RSRSLib()
-    g.rsrslib.init_sec_rsrs(g.security,context.previous_date)
-    
-    g.fisher = Fisher()
     g.stopper = StopManager()
 
     g.risk = 0.03 # 风险敞口
@@ -1303,8 +1197,6 @@ def initialize(context):
 def before_market_open(context):
     # 输出运行时间
     log.info('函数运行时间(before_market_open)：'+str(context.current_dt.time()))
-    # g.rsrslib = RSRSLib()
-    # g.rsrslib.load_rsrs_from()
 
 ## 开盘时运行函数
 def market_open(context):
@@ -1316,7 +1208,6 @@ def market_open(context):
 
 ## 收盘后运行函数  
 def after_market_close(context):
-    # g.rsrslib.to_file()
     log.info(str('函数运行时间(after_market_close):'+str(context.current_dt.time())))
     #得到当天所有成交记录
     trades = get_trades()
@@ -1326,19 +1217,12 @@ def after_market_close(context):
     log.info('#'*50)
 
 def after_code_changed(context):
-    g.risk = 0.03 # 风险敞口
+    g.risk = 0.05 # 风险敞口
     g.confidentLevel = 1.96
     g.stock_num = 5
-
-    if not hasattr(g,'rsrslib') or g.rsrslib is None:
-        g.rsrslib = RSRSLib()
-        g.rsrslib.init_sec_rsrs(g.security,context.previous_date)
-        
-    if not hasattr(g,'fisher') or g.fisher is None:
-        g.fisher = Fisher()
     
     if not hasattr(g,'stopper') or g.stopper is None:
         g.stopper = StopManager()
-        g.stopper.stop_ratio = 0.92 # 跌8%止损
+        g.stopper.stop_ratio = 0.1 # 跌8%止损
         g.stopper.stop_ndays = 20
 
