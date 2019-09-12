@@ -8,6 +8,17 @@
 import pandas as pd
 import datetime as dt
 
+def log_time(f):
+    import time
+    def decorater(*args,**kw):
+        now = time.time() * 1000
+        ret = f(*args,**kw)
+        delta = time.time() * 1000 - now
+        log.info('函数[%s]用时[%d]'%(f.__name__,delta))
+        return ret
+    
+    return decorater
+    
 
 class FileHelper:
     @staticmethod
@@ -25,6 +36,41 @@ class FileHelper:
             return dict_data
         except Exception as e:
             log.info('加载文件失败。'+str(e))
+
+class DateHelper:
+    
+    @classmethod
+    def to_date(cls,one):
+        import datetime
+        if isinstance(one,str):
+            one_date = datetime.datetime.strptime(one, "%Y-%m-%d")
+            return one_date.date()
+        
+        if isinstance(one,datetime.datetime):
+            return one.date()
+        
+        if isinstance(one,datetime.date):
+            return one
+        
+        raise RuntimeError('不支持的日期格式')
+
+    @classmethod
+    def add_ndays(cls,one,ndays):
+        import datetime
+        one_date = cls.to_date(one)
+        one_date = one_date + datetime.timedelta(ndays)
+        return one_date 
+    
+    @classmethod
+    def date_is_after(cls, one, other):
+        import datetime
+
+        one_date = cls.to_date(one)
+        other_date = cls.to_date(other)
+        
+        is_after = one_date > other_date
+        print('one[%s] after other[%s]? [%s]'%(str(one_date),str(other_date),str(is_after)))
+        return is_after
 
 class BzUtil():
     # 去极值
@@ -568,12 +614,85 @@ class QuantLib():
         
         return profit_ratio_list
 
+# 用于缓存查询的ps数据。
+class CacheDataFramePs:
+    def __init__(self):
+        self.df = None
+
+    def __fun_get_ps(self,startDate):
+        __df = get_fundamentals(query(valuation.code, valuation.ps_ratio), date = startDate)
+        __df.rename(columns={'ps_ratio':str(DateHelper.to_date(startDate))}, inplace=True)
+        return __df
+    
+    def append_cache_ps(self, current_dt,df=None):
+        df1 = self.__fun_get_ps(current_dt)
+        if df is not None:
+            df = df.merge(df1, on='code')
+
+        if df is None:
+            df =df1
+
+        return df
+
+    def get_his_mon_ps(self, current_dt, df=None,num=48):
+        for i in range(num):
+            last_mon = current_dt - dt.timedelta(30*(num-i))
+            df = self.append_cache_ps(last_mon,df)
+        
+        return df
+
+    @log_time
+    def get_curr_mon_ps(self, current_dt, df=None):
+        df = self.append_cache_ps(current_dt,df)
+        return df
+    
+    def init_last_48_ps(self, current_dt):
+        self.df = self.get_his_mon_ps(current_dt)
+        return self.df
+    
+    def has_curr_mon(self,current_dt):
+        if self.df is None:
+            return False
+
+        
+        last_mon_str = self.df.columns[-1]
+        next_mon = DateHelper.add_ndays(last_mon_str,30)
+        has_curr = DateHelper.date_is_after(next_mon, current_dt)
+        return has_curr
+    
+    def too_more(self, max_cols=49):
+        if self.df is None:
+            return False
+        
+        return len(self.df.columns) > max_cols
+    
+    def drop_first(self):
+        # 0 code列 1 最早一列，前面初始化时是按时间序列排序的
+        self.df.drop([self.df.columns[1]],axis=1,inplace=True) 
+    
+    @log_time
+    def try_get_current_copy(self, current_dt):
+        if self.df is None:
+            self.df = self.init_last_48_ps(current_dt)
+            self.df = self.get_curr_mon_ps(current_dt,self.df)
+            return self.df.copy()
+        
+        if self.has_curr_mon(current_dt):
+            return self.df.copy()
+        
+        self.df = self.get_curr_mon_ps(current_dt,self.df)
+
+        if self.too_more():
+            self.drop_first()
+        
+        return self.df.copy()
 
 class ValueFactorLib():
     def __init__(self):
         pass
         
     @staticmethod
+    @log_time
     def fun_get_stock_list(now_date, hold_number=10, statsDate=None):
         relative_ps = ValueFactorLib.fun_get_relative_ps(statsDate)
         low_ps = ValueFactorLib.fun_get_low_ps(statsDate)
@@ -614,75 +733,103 @@ class ValueFactorLib():
         return stock_list[:hold_number]
 
     @staticmethod
+    @log_time
+    def fun_get_copy_ps_from_cache(startDate=None):
+        return g.cacher.try_get_current_copy(startDate)
+
+    @staticmethod
+    @log_time
     def fun_get_relative_ps(statsDate=None):
-        def __fun_get_ps(statsDate, deltamonth):
-            __df = get_fundamentals(query(valuation.code, valuation.ps_ratio), date = (statsDate - dt.timedelta(30*deltamonth)))
-            __df.rename(columns={'ps_ratio':deltamonth}, inplace=True)
-            return __df
+        # def __fun_get_ps(statsDate, deltamonth):
+        #     __df = get_fundamentals(query(valuation.code, valuation.ps_ratio), date = (statsDate - dt.timedelta(30*deltamonth)))
+        #     __df.rename(columns={'ps_ratio':deltamonth}, inplace=True)
+        #     return __df
 
-        for i in range(48):
-            df1 = __fun_get_ps(statsDate, i)
-            if i == 0:
-                df = df1
-            else:
-                df = df.merge(df1, on='code')
+        # for i in range(48):
+        #     df1 = __fun_get_ps(statsDate, i)
+        #     if i == 0:
+        #         df = df1
+        #     else:
+        #         df = df.merge(df1, on='code')
+        @log_time
+        def pre_handle_df(df):
+            df.index = list(df['code'])
+            df = df.drop(['code'], axis=1)
 
-        df.index = list(df['code'])
-        df = df.drop(['code'], axis=1)
+            df = df.fillna(value=0, axis=0)
+            # 1. 计算相对市收率，相对市收率等于个股市收率除以全市场的市收率，这样处理的目的是为了剔除市场估值变化的影响
+            for i in range(len(df.columns)):
+                s = df.iloc[:,i]
+                median = s.median()
+                df.iloc[:,i] = s / median
+            
+            return df
+        
+        @log_time
+        def get_relative_stocks_dict(df):
+            length, stock_list, stock_dict = len(df), list(df.index), {}
+            # 2. 计算相对市收率N个月的移动平均值的N个月的标准差，并据此计算布林带上下轨（N个月的移动平均值+/-N个月移动平均的标准差）。N = 24
+            for i in range(length):
+                s = df.iloc[i,:]
+                if s.min() >= 0:
+                    # tmp_list 是24个月的相对市收率均值
+                    tmp_list = []
+                    for j in range(24):
+                        tmp_list.append(s[j:j+24].mean())
+                    # mean_value 是最近 24个月的相对市收率均值
+                    mean_value = tmp_list[0]
+                    # std_value 是相对市收率24个月的移动平均值的24个月的标准差
+                    std_value = np.std(tmp_list)
+                    tmp_dict = {}
+                    # (mean_value - std_value)，是布林线下轨（此处定义和一般布林线不一样，一般是 均线 - 2 倍标准差）
+                    '''
+                    研报原始的策略，选择 s[0] < mean_value - std_value 的标的，但因为 ps_ratio十分不稳定，跳跃很大，此区间里的测试结果非常不稳定
+                    本策略退而求其次，选择均线-1倍标准差 和 均线 - 2 倍标准差之间的标的
+                    大致反映策略的有效性
+                    '''
+                    if s[0] > (mean_value - 2.0*std_value) and s[0] < mean_value:
+                        # 记录 相对市收率均值 / 当期相对市收率
+                        stock_dict[stock_list[i]] = (1.0*mean_value/s[0])
+            
+            return stock_dict
 
-        df = df.fillna(value=0, axis=0)
-        # 1. 计算相对市收率，相对市收率等于个股市收率除以全市场的市收率，这样处理的目的是为了剔除市场估值变化的影响
-        for i in range(len(df.columns)):
-            s = df.iloc[:,i]
-            median = s.median()
-            df.iloc[:,i] = s / median
+        @log_time
+        def get_sort_list(stock_dict):
+            stock_list = []
+            dict_score = stock_dict
+            dict_score = sorted(list(dict_score.items()), key=lambda d:d[1], reverse=True)
+            for idx in dict_score:
+                stock = idx[0]
+                stock_list.append(stock)
 
-        length, stock_list, stock_dict = len(df), list(df.index), {}
-        # 2. 计算相对市收率N个月的移动平均值的N个月的标准差，并据此计算布林带上下轨（N个月的移动平均值+/-N个月移动平均的标准差）。N = 24
-        for i in range(length):
-            s = df.iloc[i,:]
-            if s.min() >= 0:
-                # tmp_list 是24个月的相对市收率均值
-                tmp_list = []
-                for j in range(24):
-                    tmp_list.append(s[j:j+24].mean())
-                # mean_value 是最近 24个月的相对市收率均值
-                mean_value = tmp_list[0]
-                # std_value 是相对市收率24个月的移动平均值的24个月的标准差
-                std_value = np.std(tmp_list)
-                tmp_dict = {}
-                # (mean_value - std_value)，是布林线下轨（此处定义和一般布林线不一样，一般是 均线 - 2 倍标准差）
-                '''
-                研报原始的策略，选择 s[0] < mean_value - std_value 的标的，但因为 ps_ratio十分不稳定，跳跃很大，此区间里的测试结果非常不稳定
-                本策略退而求其次，选择均线-1倍标准差 和 均线 - 2 倍标准差之间的标的
-                大致反映策略的有效性
-                '''
-                if s[0] > (mean_value - 2.0*std_value) and s[0] < mean_value:
-                    # 记录 相对市收率均值 / 当期相对市收率
-                    stock_dict[stock_list[i]] = (1.0*mean_value/s[0])
+            return stock_list
+        
+        df = ValueFactorLib.fun_get_copy_ps_from_cache(startDate=statsDate)
+        df = pre_handle_df(df)
 
-        stock_list = []
-        dict_score = stock_dict
-        dict_score = sorted(list(dict_score.items()), key=lambda d:d[1], reverse=True)
-        for idx in dict_score:
-            stock = idx[0]
-            stock_list.append(stock)
+        stock_dict = get_relative_stocks_dict(df)
 
-        return stock_list
+        sorted_stock_list = get_sort_list(stock_dict)
+
+        return sorted_stock_list
+
     
     @staticmethod
-    def fun_get_not_relative_ps(statsDate=None):
-        def __fun_get_ps(statsDate, deltamonth):
-            __df = get_fundamentals(query(valuation.code, valuation.ps_ratio), date = (statsDate - dt.timedelta(30*deltamonth)))
-            __df.rename(columns={'ps_ratio':deltamonth}, inplace=True)
-            return __df
+    @log_time
+    def fun_get_not_relative_ps(stocks,statsDate=None):
+        # def __fun_get_ps(statsDate, deltamonth):
+        #     __df = get_fundamentals(query(valuation.code, valuation.ps_ratio).filter(valuation.code.in_(stocks)), date = (statsDate - dt.timedelta(30*deltamonth)))
+        #     __df.rename(columns={'ps_ratio':deltamonth}, inplace=True)
+        #     return __df
 
-        for i in range(48):
-            df1 = __fun_get_ps(statsDate, i)
-            if i == 0:
-                df = df1
-            else:
-                df = df.merge(df1, on='code')
+        # for i in range(48):
+        #     df1 = __fun_get_ps(statsDate, i)
+        #     if i == 0:
+        #         df = df1
+        #     else:
+        #         df = df.merge(df1, on='code')
+
+        df = ValueFactorLib.fun_get_copy_ps_from_cache(startDate=statsDate)
 
         df.index = list(df['code'])
         df = df.drop(['code'], axis=1)
@@ -721,6 +868,7 @@ class ValueFactorLib():
         return not_relative_stocks
     
     @staticmethod
+    @log_time
     def get_sorted_ps(startDate):
         df = get_fundamentals(
             query(valuation.code, valuation.ps_ratio),
@@ -1042,7 +1190,8 @@ class Trader():
     
     def is_stock_too_high(self,stock):
         if not hasattr(self,'not_relateive_low_stocks') or self.not_relateive_low_stocks is None:
-            self.not_relateive_low_stocks = ValueFactorLib.fun_get_not_relative_ps(statsDate=self.context.previous_date)
+            holds = list(self.context.portfolio.positions.keys())
+            self.not_relateive_low_stocks = ValueFactorLib.fun_get_not_relative_ps(stocks=holds, statsDate=self.context.previous_date)
 
         if stock in self.not_relateive_low_stocks:
             log.info('[%s]在相对高估股票中'%(stock))
@@ -1192,6 +1341,9 @@ def initialize(context):
 
     g.risk = 0.03 # 风险敞口
     g.confidentLevel = 1.96
+
+    g.cacher = CacheDataFramePs() # 缓存
+    g.cacher.init_last_48_ps(context.current_dt)
     
 ## 开盘前运行函数     
 def before_market_open(context):
@@ -1225,4 +1377,8 @@ def after_code_changed(context):
         g.stopper = StopManager()
         g.stopper.stop_ratio = 0.1 # 跌8%止损
         g.stopper.stop_ndays = 20
+
+    
+    g.cacher = CacheDataFramePs() # 缓存
+    g.cacher.init_last_48_ps(context.current_dt)
 

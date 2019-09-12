@@ -1,4 +1,9 @@
 {
     "python.pythonPath": "C:\\programs\\JoinQuant-Desktop-Py3\\JoinQuant-Desktop-Py3\\Python",
-    "python.formatting.provider": "autopep8"
+    "python.formatting.provider": "autopep8",
+    "python.linting.pep8Args": [
+        "--ignore=E24,W504",
+        "disable=E0602, E0603"
+    ],
+    "python.linting.enabled": false
 }
