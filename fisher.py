@@ -7,6 +7,7 @@
 # 优化点：1 增加止损 2 市场整体有风险时，平掉亏损仓位。 3 有风险时，除了亏损，rsrs为卖的也平掉。
 import pandas as pd
 import datetime as dt
+from jqdata import get_trade_days
 
 def log_time(f):
     import time
@@ -38,7 +39,6 @@ class FileHelper:
             log.info('加载文件失败。'+str(e))
 
 class DateHelper:
-    
     @classmethod
     def to_date(cls,one):
         import datetime
@@ -63,13 +63,11 @@ class DateHelper:
     
     @classmethod
     def date_is_after(cls, one, other):
-        import datetime
-
         one_date = cls.to_date(one)
         other_date = cls.to_date(other)
         
         is_after = one_date > other_date
-        print('one[%s] after other[%s]? [%s]'%(str(one_date),str(other_date),str(is_after)))
+        # print('one[%s] after other[%s]? [%s]'%(str(one_date),str(other_date),str(is_after)))
         return is_after
 
 class BzUtil():
@@ -653,11 +651,11 @@ class CacheDataFramePs:
     def has_curr_mon(self,current_dt):
         if self.df is None:
             return False
-
         
         last_mon_str = self.df.columns[-1]
         next_mon = DateHelper.add_ndays(last_mon_str,30)
         has_curr = DateHelper.date_is_after(next_mon, current_dt)
+        log.info('current[%s] is already in curr mon[end:%s]? %s.'%(str(current_dt),str(next_mon),str(has_curr)))
         return has_curr
     
     def too_more(self, max_cols=49):
@@ -686,6 +684,8 @@ class CacheDataFramePs:
             self.drop_first()
         
         return self.df.copy()
+
+
 
 class ValueFactorLib():
     def __init__(self):
@@ -1006,6 +1006,113 @@ class StopManager():
 
         return filted_stocks + sorted_stocks
 
+
+
+class QuantileWraper:
+    def __init__(self):
+        self.pe_pb_df = None
+        self.quantile = None
+        self.index_code = '000300.XSHG'
+
+    def pretty_print(self,ndays=5):
+        if self.quantile is None:
+            log.info('没有指数PE分位数据。')
+            return
+        
+        import prettytable as pt
+
+        tb = pt.PrettyTable(["日期", "pe", "pb", "近" + str(g.quantile_long) + "年pe百分位高度"])
+        for i in range(1, ndays+1):
+            tb.add_row([str(self.pe_pb_df.index[-i]), 
+                        str(self.pe_pb_df['pe'].iat[-i]),
+                        str(self.pe_pb_df['pb'].iat[-i]), 
+                        str(self.quantile['quantile'].iat[-i])])
+        index_name = get_security_info(self.index_code).display_name
+        log.info('每日报告，' + index_name + '近'+ str(ndays)+'个交易日估值信息：\n' + str(tb))
+
+    def get_one_day_index_pe_pb_media(self,index_code, date):
+        stocks = get_index_stocks(index_code, date)
+        q = query(valuation.pe_ratio, 
+                valuation.pb_ratio
+                ).filter(valuation.pe_ratio != None,
+                        valuation.pb_ratio != None,
+                        valuation.code.in_(stocks))
+        df = get_fundamentals(q, date)
+        quantile = df.quantile([0.25, 0.75])
+        df_pe = df.pe_ratio[(df.pe_ratio > quantile.pe_ratio.values[0]) & (df.pe_ratio < quantile.pe_ratio.values[1])]
+        df_pb = df.pb_ratio[(df.pb_ratio > quantile.pb_ratio.values[0]) & (df.pb_ratio < quantile.pb_ratio.values[1])]
+        return date, df_pe.median(), df_pb.median()
+    
+    # 定义一个函数，计算每天的成份股的平均pe/pb
+    def iter_pe_pb(self, index_code, start_date, end_date):
+        # 一个获取PE/PB的生成器
+        trade_date = get_trade_days(start_date=start_date, end_date=end_date)   
+        for date in trade_date:
+            yield self.get_one_day_index_pe_pb_media(index_code, date)
+
+    @log_time    
+    def get_pe_pb(self, index_code, end_date, old_pe_pb=None):
+        if old_pe_pb is not None:
+            start_date = old_pe_pb.index[-1]
+        else:
+            info = get_security_info(index_code)
+            start_date = info.start_date
+
+        dict_result = [{'date': value[0], 'pe': value[1], 'pb':value[2]} for value in self.iter_pe_pb(index_code, start_date, end_date)]
+
+        df_result = pd.DataFrame(dict_result)
+        df_result.set_index('date', inplace=True)
+
+        if old_pe_pb is None:
+            old_pe_pb = df_result
+        else:
+            old_pe_pb = pd.concat([old_pe_pb, df_result],sort=True)
+
+        return old_pe_pb
+
+    ## pe近7年百分位位置计算
+    @log_time
+    def get_quantile(self, pe_pb_data, p='pe', n=7.5):
+        """pe百分位计算。
+        Args:
+            p: 可以是 pe，也可以是 pb。
+            n: 指用于计算指数估值百分位的区间，如果是5指近5年数据。
+            pe_pb_data: 包含有 pe/pb 的 DataFrame。
+        Returns:
+            计算后的DataFrame。
+        """
+        _df = pe_pb_data.copy()
+        windows = self._year_to_days(n)  # 将时间取整数
+
+        _df['quantile'] = _df[p].rolling(windows).apply(lambda x: pd.Series(x).rank().iloc[-1] / 
+                                                    pd.Series(x).shape[0], raw=True)
+        _df.dropna(inplace=True)
+        return _df
+    
+    def _year_to_days(self, years):
+        # 这里的计算按一年244个交易日计算
+        return int(years * 244)
+    
+    def init_last_years(self, current_dt, years=7.5, index_code='000300.XSHG'):
+        start_date = DateHelper.add_ndays(current_dt,-self._year_to_days(years))
+        self.pe_pb_df = self.get_pe_pb(index_code,current_dt)
+        self.quantile = self.get_quantile(self.pe_pb_df,'pe',years)
+        self.index_code = index_code
+        return self.quantile
+    
+    @log_time
+    def try_get_today_quantile(self, current_dt, years=7.5, index_code='000300.XSHG'):
+        if self.quantile is None:
+            self.quantile = self.init_last_years(DateHelper.add_ndays(current_dt,-1),years,index_code)
+
+        last_day = self.quantile.index[-1]
+
+        if DateHelper.date_is_after(current_dt, last_day):
+            self.pe_pb_df = self.get_pe_pb(index_code=self.index_code,end_date=current_dt, old_pe_pb=self.pe_pb_df)
+            self.quantile = self.get_quantile(self.pe_pb_df,'pe',years)
+
+        return self.quantile['quantile'].iat[-1]
+
 class RiskLib:
     @staticmethod
     def __get_daily_returns(stock_or_list, freq, lag):
@@ -1144,6 +1251,21 @@ class RiskLib:
         portfolio_vaR = RiskLib.get_portfilo_VaR(portfolio_ratios=portfolio_ratios,confidentLevel=confidentLevel)
         return risk_money/portfolio_vaR
 
+    @classmethod
+    def formula_risk(cls, quantile, rmax=0.08, rmin=0.005):
+        # risk 以50%为顶点的倒抛物线，0<quantile<1
+        log.info('quantile:%f'%(quantile))
+        return rmax - 4*(rmax-rmin) * (quantile-0.5)*(quantile-0.5)
+    
+    @classmethod
+    def ajust_risk(cls, context):
+        # 根据当前PE的分位、当前盈亏，调整risk。
+        quantile = g.quantile.try_get_today_quantile(context.current_dt)
+
+        risk = cls.formula_risk(quantile,rmax=g.max_risk,rmin=g.min_risk)
+        log.info('rmax[%f] rmin[%f] new risk[%f]'%(g.max_risk,g.min_risk,risk))
+        return risk
+
 
 def print_with_name(stocks):
     for s in stocks:
@@ -1275,7 +1397,7 @@ class Trader():
 
         buy_value = min(risk_value,self.context.portfolio.total_value)
 
-        log.info('portfilo_ratio:',portfilo_ratio,' buy_value:', buy_value)
+        log.info('portfilo_ratio:',portfilo_ratio,' buy_value:', buy_value,' g.risk:', g.risk)
         
         self.ajust_hold_positions(portfilo_ratio,buy_value)
 
@@ -1330,20 +1452,8 @@ def initialize(context):
       # 收盘后运行
     run_daily(after_market_close, time='after_close', reference_security='000300.XSHG')
 
-    g.init = True
-    g.stock_num = 5
+    # g.init = True
     
-    g.security = '000300.XSHG'
- 
-    g.stocks = None
-    
-    g.stopper = StopManager()
-
-    g.risk = 0.03 # 风险敞口
-    g.confidentLevel = 1.96
-
-    g.cacher = CacheDataFramePs() # 缓存
-    g.cacher.init_last_48_ps(context.current_dt)
     
 ## 开盘前运行函数     
 def before_market_open(context):
@@ -1357,28 +1467,45 @@ def market_open(context):
     trader.market_open()
 
 
-
 ## 收盘后运行函数  
 def after_market_close(context):
     log.info(str('函数运行时间(after_market_close):'+str(context.current_dt.time())))
+
+    g.risk = RiskLib.ajust_risk(context)
+    g.quantile.pretty_print()
     #得到当天所有成交记录
-    trades = get_trades()
-    for _trade in list(trades.values()):
-        log.info('成交记录：'+str(_trade))
+    # trades = get_trades()
+    # for _trade in list(trades.values()):
+    #     log.info('成交记录：'+str(_trade))
     log.info('一天结束')
     log.info('#'*50)
 
 def after_code_changed(context):
-    g.risk = 0.05 # 风险敞口
-    g.confidentLevel = 1.96
     g.stock_num = 5
     
-    if not hasattr(g,'stopper') or g.stopper is None:
-        g.stopper = StopManager()
-        g.stopper.stop_ratio = 0.1 # 跌8%止损
-        g.stopper.stop_ndays = 20
-
+    g.security = '000300.XSHG'
+ 
+    g.stocks = None
     
+    g.stopper = StopManager()
+    g.stopper.stop_ratio = 0.1 # 跌8%止损
+    g.stopper.stop_ndays = 20
+
+    # 风险敞口的最大最小值
+    g.risk = 0.03 # 风险敞口
+    g.max_risk, g.min_risk = 0.05,0.005
+    g.confidentLevel = 1.96
+
     g.cacher = CacheDataFramePs() # 缓存
     g.cacher.init_last_48_ps(context.current_dt)
+  
+
+    g.quantile_long = 7.5 # 检查的pe分位的年数
+
+    g.quantile = QuantileWraper()
+    g.quantile.init_last_years(context.current_dt,years=g.quantile_long)
+
+    g.risk = RiskLib.ajust_risk(context)
+        
+
 
