@@ -717,7 +717,6 @@ class CacheDataFramePs:
             
         
     
-    @log_time
     def try_get_current_copy(self, current_dt):
         if self.df is None:
             self.df = self.init_last_48_ps(current_dt)
@@ -824,7 +823,7 @@ class CacheDataFramePs:
         
         cur_ps,mean,std,score = self.get_mean_std(stock)
         
-        if cur_ps > 0 and cur_ps > mean + std and score > 0:
+        if cur_ps > 0 and cur_ps > mean + 2*std and score > 0:
             return 'H'
             
         if score > 0 and cur_ps > 0 and cur_ps > mean - 2 * std and cur_ps < mean:
@@ -1331,18 +1330,17 @@ class RiskLib:
 
     @classmethod
     def formula_risk(cls, quantile, rmax=0.08, rmin=0.005):
-        # risk 以50%为顶点的倒抛物线，0<quantile<1
-        # 大于0.8，市场风险很大，以最小风险持股。
-        q_mid = 0.4
-        q_min = 0.01
+        # risk 以0为顶点，开口向下的抛物线，quantile>0.85后，取最小值
+        q_mid = 0
+        q_min = -0.85
         q_max = q_mid + q_mid - q_min
     
         if quantile > q_max:
             return rmin
     
-        b = 1/((q_mid-q_min)*(q_mid-q_min))
+        b = (rmax-rmin)/(q_max*q_max)
     
-        return abs(rmax - b*(rmax-rmin) * (quantile-q_mid)*(quantile-q_mid))
+        return abs(rmax - b*quantile*quantile)
     
     @classmethod
     def ajust_risk(cls, context):
@@ -1381,7 +1379,7 @@ class Trader():
             pos_obj = context.portfolio.positions[p]
             p_balance = (pos_obj.price-pos_obj.avg_cost) * pos_obj.total_amount
             total_balance += p_balance
-            tb.add_row([get_security_info(p).display_name, 
+            tb.add_row([get_security_info(p).display_name + "(" + p + ")", 
                 str(DateHelper.to_date(pos_obj.init_time)), 
                 pos_obj.total_amount,
                 round(pos_obj.value,2),
@@ -1607,7 +1605,7 @@ def after_code_changed(context):
 
     # 风险敞口的最大最小值
     g.risk = 0.03 # 风险敞口
-    g.max_risk, g.min_risk = 0.04,0.01
+    g.max_risk, g.min_risk = 0.05,0.01
     g.confidentLevel = 1.96
 
     g.cacher = CacheDataFramePs() # 缓存
