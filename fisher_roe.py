@@ -1,10 +1,11 @@
 # author:linbirg
 # 2019-09-04
 # 本身存在的问题：
-# 1 fisher选股因子是长期，适合尽量久拿
-# 2.fisher中低估值（估计）存在不稳定性
-# 3.rsrs择时存在亏损过大的情况
-# 优化点：1 增加止损 2 市场整体有风险时，平掉亏损仓位。 3 有风险时，除了亏损，rsrs为卖的也平掉。
+# 1 fisher财务因子
+# 2 roe选股
+# 3 行业过滤
+
+
 import pandas as pd
 import datetime as dt
 from jqdata import get_trade_days
@@ -184,7 +185,7 @@ class BzUtil():
     # 剔除上市时间较短的产品
     @staticmethod
     def fun_delNewShare(current_dt, equity, deltaday):
-        deltaDate = current_dt.date() - dt.timedelta(deltaday)
+        deltaDate = DateHelper.to_date(current_dt) - dt.timedelta(deltaday)
     
         tmpList = []
         for stock in equity:
@@ -348,6 +349,32 @@ class BzUtil():
     def filter_intersection(stocks,others):
         ret = list(set(stocks) & set(others))
         return ret
+    
+    @classmethod
+    def financial_data_filter_bigger(cls, stocks, factor=indicator.gross_profit_margin,val=40,startDate=None):
+        q = query(indicator.code, factor).filter(factor>val,indicator.code.in_(stocks))
+        df = get_fundamentals(q,date=startDate)
+        
+        return list(df['code'])
+    
+    @classmethod
+    def filter_financial_data_area(cls, security_list, factor=valuation.pe_ratio, area=(5,35),startDate=None):
+        q = query(indicator.code, factor).filter(factor>area[0],factor<area[1],indicator.code.in_(security_list))
+        df = get_fundamentals(q,date=startDate)
+        
+        return list(df['code'])
+    
+    @classmethod
+    def get_all_stocks(cls,startDate=None):
+        q = query(indicator.code)
+        df = get_fundamentals(q, date=startDate)
+        return list(df['code'])
+
+    @classmethod
+    def print_with_name(cls, stocks):
+        for s in stocks:
+            info = get_security_info(s)
+            log.info(info.code,info.display_name)
         
 
 class QuantLib():
@@ -611,14 +638,16 @@ class QuantLib():
             profit_ratio_list = profit_ratio_list + list(df_profit_ratio[:int(len(df_profit_ratio)*0.66)].code)
         
         return profit_ratio_list
-
+    
     @classmethod
     @log_time
-    def filter_by_financial_data_bigger(cls, stocks, factor=indicator.gross_profit_margin, val=40, startDate=None):
-        q = query(indicator.code, factor).filter(factor>val,indicator.code.in_(stocks))
-        df = get_fundamentals(q,date=startDate)
-        
-        return list(df['code'])
+    def get_high_grow_stocks(cls,startDate=None):
+        # 根据增长率和roe（暂时去掉）选取的高增长股票
+        all_stocks = BzUtil.get_all_stocks(startDate)
+        all_stocks = BzUtil.financial_data_filter_bigger(all_stocks,indicator.gross_profit_margin,40,startDate)
+        all_stocks = BzUtil.filter_financial_data_area(all_stocks, factor=valuation.pe_ratio, area=(5,35),startDate=startDate)
+        all_stocks = BzUtil.financial_data_filter_bigger(all_stocks,indicator.roe,0)
+        return all_stocks
 
 
 # 用于缓存查询的ps数据。
@@ -877,10 +906,11 @@ class ValueFactorLib():
     @staticmethod
     @log_time
     def fun_get_stock_list(now_date, hold_number=10, statsDate=None):
-        relative_ps = ValueFactorLib.fun_get_relative_ps(statsDate)
-        low_ps = ValueFactorLib.fun_get_low_ps(statsDate)
-        good_stock_list = BzUtil.filter_intersection(relative_ps,low_ps) 
-
+        # relative_ps = ValueFactorLib.fun_get_relative_ps(statsDate)
+        # low_ps = ValueFactorLib.fun_get_low_ps(statsDate)
+        # good_stock_list = BzUtil.filter_intersection(relative_ps,low_ps) 
+        good_stock_list = QuantLib.get_high_grow_stocks(startDate=statsDate)
+        log.info('选取的高增长股数%d'%(len(good_stock_list)))
         # 取净利润增长率为正的
         inc_net_profit_list = QuantLib.get_inc_net_profile(statsDate)
         good_stock_list = BzUtil.filter_intersection(good_stock_list,inc_net_profit_list)
@@ -899,14 +929,16 @@ class ValueFactorLib():
         profit_ratio_list = QuantLib.get_high_profit_ratio(statsDate)
         good_stock_list = BzUtil.filter_intersection(good_stock_list,profit_ratio_list) 
 
-        stock_list = []
-        for stock in relative_ps:
-            if stock in good_stock_list:
-                stock_list.append(stock)
+        # stock_list = []
+        # for stock in relative_ps:
+        #     if stock in good_stock_list:
+        #         stock_list.append(stock)
 
+        low_ps = ValueFactorLib.fun_get_low_ps(statsDate)
+        good_stock_list = BzUtil.filter_intersection(good_stock_list,low_ps)
         print((len(good_stock_list)))
 
-        stock_list = BzUtil.fun_delNewShare(now_date, stock_list, 30)
+        stock_list = BzUtil.fun_delNewShare(now_date, good_stock_list, 30)
 
         bad_stock_list = QuantLib.fun_get_bad_stock_list(statsDate)
         stock_list = stock_list[:hold_number*10]
@@ -1423,28 +1455,32 @@ class Trader():
         # 检查止损
         g.stopper.check_stop(self.context)
 
+        g.stocks = ValueFactorLib.fun_get_tdy_stock_list(self.context.current_dt)
+
         # 如果高估，卖出；
         for p in self.context.portfolio.positions:
-            if self.is_stock_too_high(p):
+            if p not in g.stocks:
+                log.info('股票不在股票池，卖出。')
+                BzUtil.print_with_name([p])
                 order_target(p, 0)
     
-    def is_stock_too_high(self,stock):
-        if not hasattr(self,'not_relateive_low_stocks') or self.not_relateive_low_stocks is None:
-            holds = list(self.context.portfolio.positions.keys())
-            self.not_relateive_low_stocks = ValueFactorLib.fun_get_not_relative_ps(stocks=holds, statsDate=self.context.previous_date)
+    # def is_stock_too_high(self,stock):
+    #     if not hasattr(self,'not_relateive_low_stocks') or self.not_relateive_low_stocks is None:
+    #         holds = list(self.context.portfolio.positions.keys())
+    #         self.not_relateive_low_stocks = ValueFactorLib.fun_get_not_relative_ps(stocks=holds, statsDate=self.context.previous_date)
 
-        if stock in self.not_relateive_low_stocks:
-            log.info('[%s]在相对高估股票中'%(stock))
-            return True
+    #     if stock in self.not_relateive_low_stocks:
+    #         log.info('[%s]在相对高估股票中'%(stock))
+    #         return True
 
-        if not hasattr(self,'high_ps_stocks') or self.high_ps_stocks is None:
-            self.high_ps_stocks = ValueFactorLib.fun_get_high_ps(startDate=self.context.previous_date)
+    #     if not hasattr(self,'high_ps_stocks') or self.high_ps_stocks is None:
+    #         self.high_ps_stocks = ValueFactorLib.fun_get_high_ps(startDate=self.context.previous_date)
         
-        if stock in self.high_ps_stocks:
-            log.info('[%s]在高PS股票中'%(stock))
-            return True
+    #     if stock in self.high_ps_stocks:
+    #         log.info('[%s]在高PS股票中'%(stock))
+    #         return True
         
-        return False
+    #     return False
     
     # 策部略选股买卖分    
     def check_for_buy(self):
@@ -1452,7 +1488,8 @@ class Trader():
             log.info('持仓数量大于等于最大允许持仓数量，不新增仓位。')
             return
 
-        g.stocks = ValueFactorLib.fun_get_tdy_stock_list(self.context.current_dt)
+        if not hasattr(g,'stocks') or g.stocks is None:
+            g.stocks = ValueFactorLib.fun_get_tdy_stock_list(self.context.previous_date)
 
         g.stocks = g.stopper.filter_and_sort(g.stocks, self.context.current_dt)
         
