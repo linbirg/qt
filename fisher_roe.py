@@ -4,6 +4,7 @@
 # 1 fisher财务因子
 # 2 roe选股
 # 3 行业过滤
+# 优化了卖出条件的判断
 
 
 import pandas as pd
@@ -559,6 +560,7 @@ class QuantLib():
         return bad_stocks
 
     @staticmethod
+    @log_time
     def get_inc_net_profile(statsDate):
         # 取净利润增长率为正的
         df = QuantLib.get_fundamentals_sum('income', income.net_profit, statsDate)
@@ -1034,6 +1036,76 @@ class ValueFactorLib():
         statsDate = now_date - datetime.timedelta(1)
         stocks = ValueFactorLib.fun_get_stock_list(now_date=now_date,statsDate=statsDate)
         return stocks
+
+
+class Filter:
+
+    @classmethod
+    def filter_by_high_ps(cls,stocks,statDate=None):
+        high_ps_stocks = ValueFactorLib.fun_get_high_ps(statDate)
+
+        return [s for s in stocks if s in high_ps_stocks]
+    
+    @classmethod
+    def filter_by_inc_net_profile(cls, stocks,statDate=None):
+        inc_net_profit_list = QuantLib.get_inc_net_profile(statDate)
+
+        return [s for s in stocks if s not in inc_net_profit_list]
+
+    @classmethod
+    def filter_by_inc_operating_revenue(cls, stocks, statDate=None):
+        #  不在按行业取营业收入增长率前 1/3
+        inc_operating_revenue_list = QuantLib.get_inc_operating_revenue_list(statDate)
+        return [s for s in stocks if s not in inc_operating_revenue_list]
+    
+    @classmethod
+    def filter_by_liability_ratio(cls,stocks,statDate=None):
+        #  过滤指标剔除资产负债率相对行业最高的1/3的股票
+        liability_ratio_list = QuantLib.get_low_liability_ratio(statDate)
+        return [s for s in stocks if s not in liability_ratio_list]
+
+    
+    @classmethod
+    def filter_by_profit_ratio(cls, stocks, statDate=None):
+         #    剔除净利润率相对行业最低的1/3的股票；
+        profit_ratio_list = QuantLib.get_high_profit_ratio(statDate)
+        return [s for s in stocks if s not in profit_ratio_list]
+    
+    
+    @classmethod
+    def filter_by_bad(cls,stocks,statDate=None):
+        bad_stock_list = QuantLib.fun_get_bad_stock_list(statDate)
+        return BzUtil.filter_without(stocks, bad_stock_list)
+
+    
+    @classmethod
+    def filter_by_all(cls, stocks, statDate=None):
+        high_ps_stocks = cls.filter_by_high_ps(stocks,statDate)
+        log.info('高ps排除的股票：')
+        BzUtil.print_with_name(high_ps_stocks)
+
+        not_inc_profile_stocks = cls.filter_by_inc_net_profile(stocks,statDate=statDate)
+        log.info('非利润增长考前排除的股票：')
+        BzUtil.print_with_name(not_inc_profile_stocks)
+
+        inc_operating_revenue_stocks = cls.filter_by_inc_operating_revenue(stocks,statDate=statDate)
+        log.info('非行业营收靠前排除的股票：')
+        BzUtil.print_with_name(inc_operating_revenue_stocks)
+
+        liability_ratio_stocks = cls.filter_by_liability_ratio(stocks,statDate=statDate)
+        log.info('负资产率排除的股票：')
+        BzUtil.print_with_name(liability_ratio_stocks)
+
+        profit_ratio_stocks = cls.filter_by_profit_ratio(stocks,statDate=statDate)
+        log.info('净利润太低排除的股票：')
+        BzUtil.print_with_name(profit_ratio_stocks)
+
+        # filter_by_bad_stocks = cls.filter_by_bad(stocks,statDate=statDate)
+        # log.info('商誉占比太高排除的股票：')
+        # BzUtil.print_with_name(filter_by_bad_stocks)
+
+        return high_ps_stocks + not_inc_profile_stocks + inc_operating_revenue_stocks + liability_ratio_stocks + profit_ratio_stocks
+
     
 
 
@@ -1454,15 +1526,14 @@ class Trader():
 
         # 检查止损
         g.stopper.check_stop(self.context)
+        holds = list(self.context.portfolio.positions.keys())
+        bad_holds = Filter.filter_by_all(holds, self.context.current_dt)
 
-        g.stocks = ValueFactorLib.fun_get_tdy_stock_list(self.context.current_dt)
-
-        # 如果高估，卖出；
-        for p in self.context.portfolio.positions:
-            if p not in g.stocks:
-                log.info('股票不在股票池，卖出。')
-                BzUtil.print_with_name([p])
-                order_target(p, 0)
+        if len(bad_holds) > 0:
+            log.info('下列股票在不好的股票里面，将清空。')
+            BzUtil.print_with_name(bad_holds)
+            for s in bad_holds:
+                order_target(s, 0)
     
     # def is_stock_too_high(self,stock):
     #     if not hasattr(self,'not_relateive_low_stocks') or self.not_relateive_low_stocks is None:
@@ -1626,8 +1697,8 @@ def market_open(context):
 def after_market_close(context):
     log.info(str('函数运行时间(after_market_close):'+str(context.current_dt.time())))
 
-    g.risk = RiskLib.ajust_risk(context)
-    g.quantile.pretty_print()
+    # g.risk = RiskLib.ajust_risk(context)
+    # g.quantile.pretty_print()
     Trader.print_holdings(context)
     #得到当天所有成交记录
     # trades = get_trades()
@@ -1636,6 +1707,8 @@ def after_market_close(context):
     log.info('一天结束')
     log.info('#'*50)
 
+
+@log_time
 def after_code_changed(context):
     log.info('after_code_changed')
     g.stock_num = 5
@@ -1653,16 +1726,16 @@ def after_code_changed(context):
     g.max_risk, g.min_risk = 0.05,0.01
     g.confidentLevel = 1.96
 
-    g.cacher = CacheDataFramePs() # 缓存
-    g.cacher.init_last_48_ps(context.current_dt)
+    # g.cacher = CacheDataFramePs() # 缓存
+    # g.cacher.init_last_48_ps(context.current_dt)
   
 
     g.quantile_long = 7.5 # 检查的pe分位的年数
 
-    g.quantile = QuantileWraper()
-    g.quantile.init_last_years(context.current_dt,years=g.quantile_long)
+    # g.quantile = QuantileWraper()
+    # g.quantile.init_last_years(context.current_dt,years=g.quantile_long)
 
-    g.risk = RiskLib.ajust_risk(context)
+    # g.risk = RiskLib.ajust_risk(context)
         
 
 
