@@ -162,6 +162,7 @@ class BzUtil():
     @classmethod
     def filter_paused(cls, stocks, end_date, day=1, x=1):
         '''
+        @deprecated
         ### para:
         - stocks:股票池     
         - end_date:查询日期
@@ -358,6 +359,15 @@ class BzUtil():
             stock_list = []
 
         return stock_list
+
+    @classmethod
+    def fun_get_factor(cls, df, factor_name, industry, level, statsDate):
+        stock_list = BzUtil.fun_get_industry_stocks(industry, level, statsDate)
+        rs = BzUtil.fun_neutralize(stock_list, df, module=factor_name, industry_type=industry, level=level, statsDate=statsDate)
+        rs = BzUtil.fun_standardize(rs, 2)
+
+        return rs
+
     
     @staticmethod
     def filter_without(stocks, bad_stocks):
@@ -451,7 +461,7 @@ class ValueLib:
         l3 = set()
         for i in range(4):
             roe_mean = panel.loc['roe', i, :].mean()
-            log.info('roe_mean:%f'%(roe_mean))
+            # log.info('roe_mean:%f'%(roe_mean))
             df_3 = panel.iloc[:, i, :]
             df_temp_3 = df_3[df_3['roe'] > roe_mean]
             if i == 0:
@@ -598,18 +608,108 @@ class ValueLib:
         return final_panel.dropna(axis=2)
 
     @classmethod
+    @log_time
+    def get_sorted_ps(cls,startDate):
+        df = get_fundamentals(
+            query(valuation.code, valuation.ps_ratio),
+            date = startDate
+        )
+
+        # 根据 sp 去极值、中性化、标准化后，跨行业选最佳的标的
+        industry_list = BzUtil.fun_get_industry(cycle=None)
+
+        df = df.fillna(value = 0)
+        sp_ratio = {}
+        df['SP'] = 1.0/df['ps_ratio']
+
+        df = df.drop(['ps_ratio'], axis=1)
+
+        for industry in industry_list:
+            tmpDict = BzUtil.fun_get_factor(df, 'SP', industry, 2, startDate).to_dict()
+            for stock in tmpDict:
+                if stock in sp_ratio:
+                    sp_ratio[stock] = max(sp_ratio[stock],tmpDict[stock])
+                else:
+                    sp_ratio[stock] = tmpDict[stock]
+
+        dict_score = sorted(list(sp_ratio.items()), key=lambda d:d[1], reverse=True)
+        stock_list = []
+
+        for idx in dict_score:
+            stock = idx[0]
+            stock_list.append(stock)
+
+        return stock_list 
+
+    @classmethod
+    def fun_get_low_ps(cls, startDate=None):
+        stock_list = cls.get_sorted_ps(startDate=startDate)
+        return stock_list[:int(len(stock_list)*0.4)]
+    
+    @classmethod
+    def fun_get_high_ps(cls,startDate=None):
+        stock_list = cls.get_sorted_ps(startDate=startDate)
+        return stock_list[int(len(stock_list)*0.66):]
+
+    @classmethod
+    def filter_by_ps_not_high(cls,stocks):
+        high_stocks = cls.fun_get_high_ps()
+        if '600085.XSHG' in high_stocks:
+            print('600085.XSHG在filter_by_ps_not_high')
+        filterd_stocks = [s for s in stocks if s not in high_stocks]
+        return filterd_stocks
+    
+    @classmethod
+    def filter_by_in_low_ps(cls,stocks):
+        low_stocks = cls.fun_get_low_ps()
+        if '600085.XSHG' in low_stocks:
+            print('600085.XSHG在filter_by_in_low_ps')
+        return [s for s in stocks if s in low_stocks]
+
+    @classmethod
+    def filter_by_gross_profit_margin_bigger(cls,stocks,val=40):
+        '''
+        销售毛利率(%)(毛利/营业收入)≧40
+        '''
+        gross_margin_stocks = BzUtil.financial_data_filter_bigger(stocks,indicator.gross_profit_margin,val)
+        log.info('销售毛利率(%)≧40:'+str(len(gross_margin_stocks)))
+        return BzUtil.filter_intersection(stocks, gross_margin_stocks)
+
+
+    @classmethod
     def get_stock_list(cls, current_dt):
         all_stocks = BzUtil.get_all_stocks()
-        panel_data = ValueLib.get_quarter_fundamentals(all_stocks, 4)
+        panel_data = cls.get_quarter_fundamentals(all_stocks, 4)
 
-        filter_stocks = ValueLib.filter_by_4q_eps_between(all_stocks,panel_data)
-        filter_stocks = ValueLib.filter_by_4q_inc_revenue_between(filter_stocks,panel_data)
-        filter_stocks = ValueLib.filter_by_4quart_roe_bigger_mean(filter_stocks,panel_data)
-        filter_stocks = ValueLib.filter_by_5year_cf_neg(filter_stocks, current_dt)
-        filter_stocks = ValueLib.filter_by_last_quart_cr_bigger_mean(filter_stocks,panel_data)
-        filter_stocks = ValueLib.filter_by_mkt_cap_bigger_mean(filter_stocks,panel_data)
+        filter_stocks = cls.filter_by_4q_eps_between(all_stocks,panel_data)
+        filter_stocks = cls.filter_by_4q_inc_revenue_between(filter_stocks,panel_data)
+        filter_stocks = cls.filter_by_4quart_roe_bigger_mean(filter_stocks,panel_data)
+        filter_stocks = cls.filter_by_5year_cf_neg(filter_stocks, current_dt)
+        filter_stocks = cls.filter_by_last_quart_cr_bigger_mean(filter_stocks,panel_data)
+        filter_stocks = cls.filter_by_mkt_cap_bigger_mean(filter_stocks,panel_data)
         filter_stocks = BzUtil.filter_st(filter_stocks, current_dt)
         filter_stocks = BzUtil.remove_paused(filter_stocks)
+        # 增加高增长选股的毛利选股
+        filter_stocks = cls.filter_by_gross_profit_margin_bigger(filter_stocks)
+        # ps
+        filter_stocks = cls.filter_by_in_low_ps(filter_stocks)
+
+        return filter_stocks
+    
+    @classmethod
+    def filter_for_sell(cls, stocks, current_dt):
+        panel_data = cls.get_quarter_fundamentals(stocks, 4)
+
+        filter_stocks = cls.filter_by_4q_eps_between(stocks,panel_data)
+        filter_stocks = cls.filter_by_4q_inc_revenue_between(filter_stocks,panel_data)
+        filter_stocks = cls.filter_by_4quart_roe_bigger_mean(filter_stocks,panel_data)
+        filter_stocks = cls.filter_by_5year_cf_neg(filter_stocks, current_dt)
+        filter_stocks = cls.filter_by_last_quart_cr_bigger_mean(filter_stocks,panel_data)
+        filter_stocks = cls.filter_by_mkt_cap_bigger_mean(filter_stocks,panel_data)
+        filter_stocks = BzUtil.filter_st(filter_stocks, current_dt)
+        
+        filter_stocks = cls.filter_by_ps_not_high(filter_stocks)
+
         return filter_stocks
 
 
@@ -736,7 +836,11 @@ class Trader():
         if self.positions_num() >= g.stock_num:
             log.info('持仓数量大于限仓数量，只调仓不开仓。')
             buys = list(self.context.portfolio.positions.keys())
-            self.trade(buys)
+            self.trade_equal(buys)
+            return
+        
+        if DateHelper.to_date(self.context.current_dt).day >= 25:
+            log.info('社区神定律，每月25号之后不交易')
             return
         
         self.check_for_buy()
@@ -750,8 +854,10 @@ class Trader():
         # 检查止损
         # g.stopper.check_stop(self.context)
         holds = list(self.context.portfolio.positions.keys())
+
+        sell_stocks = ValueLib.filter_for_sell(holds, self.context.current_dt)
         
-        bad_holds = [s for s in holds if s not in g.stocks]
+        bad_holds = [s for s in holds if s not in sell_stocks]
 
         if len(bad_holds) > 0:
             log.info('下列股票在不好的股票里面，将清空。')
@@ -826,7 +932,7 @@ def initialize(context):
     # 输出内容到日志 log.info()
     log.info('初始函数开始运行且全局只运行一次')
     # 过滤掉order系列API产生的比error级别低的log
-    # log.set_level('order', 'error')
+    log.set_level('order', 'error')
     # 策略参数设置
     # 操作的股票列表
     
@@ -846,6 +952,8 @@ def initialize(context):
     run_daily(before_market_open, time='before_open', reference_security='000300.XSHG') 
       # 开盘时运行
     run_daily(market_open, time='open', reference_security='000300.XSHG')
+
+    run_daily(after_market_close, time='after_close', reference_security='000300.XSHG')
 
 # 开盘前运行函数
 
@@ -883,6 +991,10 @@ def market_open(context):
     log.info('函数运行时间(market_open):'+str(context.current_dt.time()))
     trader = Trader(context)
     trader.market_open()
+
+
+def after_market_close(context):
+    Trader.print_holdings(context)
 
 
 
