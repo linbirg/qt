@@ -652,11 +652,12 @@ class ValueLib:
         return stock_list[int(len(stock_list)*0.66):]
 
     @classmethod
-    def filter_by_ps_not_high(cls,stocks):
+    def filter_by_ps_not_in_high(cls,stocks):
         high_stocks = cls.fun_get_high_ps()
-        if '600085.XSHG' in high_stocks:
-            print('600085.XSHG在filter_by_ps_not_high')
+        
         filterd_stocks = [s for s in stocks if s not in high_stocks]
+        log.info('持仓不再高ps区：')
+        BzUtil.print_with_name(filterd_stocks)
         return filterd_stocks
     
     @classmethod
@@ -698,19 +699,34 @@ class ValueLib:
     
     @classmethod
     def filter_for_sell(cls, stocks, current_dt):
-        panel_data = cls.get_quarter_fundamentals(stocks, 4)
+        # panel_data = cls.get_quarter_fundamentals(stocks, 4)
 
-        filter_stocks = cls.filter_by_4q_eps_between(stocks,panel_data)
+        # filter_stocks = cls.filter_by_4q_eps_between(stocks,panel_data)
+        # filter_stocks = cls.filter_by_4q_inc_revenue_between(filter_stocks,panel_data)
+        # filter_stocks = cls.filter_by_4quart_roe_bigger_mean(filter_stocks,panel_data)
+        # filter_stocks = cls.filter_by_5year_cf_neg(filter_stocks, current_dt)
+        # filter_stocks = cls.filter_by_last_quart_cr_bigger_mean(filter_stocks,panel_data)
+        # filter_stocks = cls.filter_by_mkt_cap_bigger_mean(filter_stocks,panel_data)
+        # filter_stocks = BzUtil.filter_st(filter_stocks, current_dt)
+
+        all_stocks = BzUtil.get_all_stocks()
+        panel_data = cls.get_quarter_fundamentals(all_stocks, 4)
+
+        filter_stocks = cls.filter_by_4q_eps_between(all_stocks,panel_data)
         filter_stocks = cls.filter_by_4q_inc_revenue_between(filter_stocks,panel_data)
         filter_stocks = cls.filter_by_4quart_roe_bigger_mean(filter_stocks,panel_data)
         filter_stocks = cls.filter_by_5year_cf_neg(filter_stocks, current_dt)
         filter_stocks = cls.filter_by_last_quart_cr_bigger_mean(filter_stocks,panel_data)
         filter_stocks = cls.filter_by_mkt_cap_bigger_mean(filter_stocks,panel_data)
         filter_stocks = BzUtil.filter_st(filter_stocks, current_dt)
+        # 增加高增长选股的毛利选股
+        filter_stocks = cls.filter_by_gross_profit_margin_bigger(filter_stocks)
         
-        filter_stocks = cls.filter_by_ps_not_high(filter_stocks)
+        can_hold = [s for s in stocks if s in filter_stocks]
+        
+        can_hold = cls.filter_by_ps_not_in_high(can_hold)
 
-        return filter_stocks
+        return can_hold
 
 
 
@@ -855,9 +871,14 @@ class Trader():
         # g.stopper.check_stop(self.context)
         holds = list(self.context.portfolio.positions.keys())
 
-        sell_stocks = ValueLib.filter_for_sell(holds, self.context.current_dt)
+        can_hold_stocks = ValueLib.filter_for_sell(holds, self.context.current_dt)
+
+        log.info('can hold stocks:')
+        BzUtil.print_with_name(can_hold_stocks)
         
-        bad_holds = [s for s in holds if s not in sell_stocks]
+        bad_holds = [s for s in holds if s not in can_hold_stocks]
+        log.info('bad_holds:')
+        BzUtil.print_with_name(bad_holds)
 
         if len(bad_holds) > 0:
             log.info('下列股票在不好的股票里面，将清空。')
