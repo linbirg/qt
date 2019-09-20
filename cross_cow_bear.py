@@ -502,7 +502,7 @@ class ValueLib:
         return [s for s in stocks if s in stocks_neg_5year_cach_flow]
     
     @classmethod
-    def filter_by_4q_inc_revenue_between(cls, stocks, panel, area=(6,30)):
+    def filter_by_4q_inc_revenue_between(cls, stocks, panel, area=(6,50)):
         '''
         ### 近四季营收成长率介于6%至30%.   
           ```'IRYOY':indicator.inc_revenue_year_on_year # 营业收入同比增长率(%)```
@@ -523,7 +523,7 @@ class ValueLib:
         return [s for s in stocks if s in stocks_4q_inc_revenue_between]
 
     @classmethod
-    def filter_by_4q_eps_between(cls, stocks, panel, area=(0.08,0.5)):
+    def filter_by_4q_eps_between(cls, stocks, panel, area=(0.08,0.6)):
         '''
         ### 近四季盈余成长率介于8%至50%。(eps比值)
         '''
@@ -681,6 +681,7 @@ class ValueLib:
     def get_stock_list(cls, current_dt):
         all_stocks = BzUtil.get_all_stocks()
         panel_data = cls.get_quarter_fundamentals(all_stocks, 4)
+        g.panel = panel_data
 
         filter_stocks = cls.filter_by_4q_eps_between(all_stocks,panel_data)
         filter_stocks = cls.filter_by_4q_inc_revenue_between(filter_stocks,panel_data)
@@ -699,18 +700,13 @@ class ValueLib:
     
     @classmethod
     def filter_for_sell(cls, stocks, current_dt):
-        # panel_data = cls.get_quarter_fundamentals(stocks, 4)
-
-        # filter_stocks = cls.filter_by_4q_eps_between(stocks,panel_data)
-        # filter_stocks = cls.filter_by_4q_inc_revenue_between(filter_stocks,panel_data)
-        # filter_stocks = cls.filter_by_4quart_roe_bigger_mean(filter_stocks,panel_data)
-        # filter_stocks = cls.filter_by_5year_cf_neg(filter_stocks, current_dt)
-        # filter_stocks = cls.filter_by_last_quart_cr_bigger_mean(filter_stocks,panel_data)
-        # filter_stocks = cls.filter_by_mkt_cap_bigger_mean(filter_stocks,panel_data)
-        # filter_stocks = BzUtil.filter_st(filter_stocks, current_dt)
-
         all_stocks = BzUtil.get_all_stocks()
-        panel_data = cls.get_quarter_fundamentals(all_stocks, 4)
+        
+        panel_data = None
+        if g.panel is not None:
+            panel_data = g.panel
+        else:
+            panel_data = cls.get_quarter_fundamentals(all_stocks, 4)
 
         filter_stocks = cls.filter_by_4q_eps_between(all_stocks,panel_data)
         filter_stocks = cls.filter_by_4q_inc_revenue_between(filter_stocks,panel_data)
