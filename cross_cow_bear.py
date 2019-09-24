@@ -430,8 +430,9 @@ class ValueLib:
             过滤后的股票列表
         '''
         df_mkt = panel.loc[['circulating_market_cap'], 3, :]
+        log.info('市场流通市值均值[%f]'%(df_mkt['circulating_market_cap'].mean()))
         df_mkt = df_mkt[df_mkt['circulating_market_cap']
-                        > df_mkt['circulating_market_cap'].mean()]
+                        > df_mkt['circulating_market_cap'].mean()*0.5]
 
         stocks_cap_bigger_mean = set(df_mkt.index)
         log.info('总市值≧市场平均值:%d'%(len(stocks_cap_bigger_mean)))
@@ -448,9 +449,9 @@ class ValueLib:
         # 替换零的数值
         df_cr = df_cr[df_cr['total_current_liability'] != 0]
         df_cr['cr'] = df_cr['total_current_assets'] / df_cr['total_current_liability']
-        df_cr_temp = df_cr[df_cr['cr'] > df_cr['cr'].mean()]
+        df_cr_temp = df_cr[df_cr['cr'] > df_cr['cr'].mean()*0.8]
         stocks_cr_bigger_mean = set(df_cr_temp.index)
-        log.info('最近一季流动比率≧市场平均值:%d'%(len(stocks_cr_bigger_mean)))
+        log.info('最近一季流动比率≧市场平均值(0.8):%d'%(len(stocks_cr_bigger_mean)))
         return [s for s in stocks if s in stocks_cr_bigger_mean]
     
     @classmethod
@@ -461,7 +462,7 @@ class ValueLib:
         l3 = set()
         for i in range(4):
             roe_mean = panel.loc['roe', i, :].mean()
-            # log.info('roe_mean:%f'%(roe_mean))
+            log.info('roe_mean:%f'%(roe_mean))
             df_3 = panel.iloc[:, i, :]
             df_temp_3 = df_3[df_3['roe'] > roe_mean]
             if i == 0:
@@ -502,7 +503,7 @@ class ValueLib:
         return [s for s in stocks if s in stocks_neg_5year_cach_flow]
     
     @classmethod
-    def filter_by_4q_inc_revenue_between(cls, stocks, panel, area=(6,50)):
+    def filter_by_4q_inc_revenue_between(cls, stocks, panel, area=(6,60)):
         '''
         ### 近四季营收成长率介于6%至30%.   
           ```'IRYOY':indicator.inc_revenue_year_on_year # 营业收入同比增长率(%)```
@@ -523,7 +524,8 @@ class ValueLib:
         return [s for s in stocks if s in stocks_4q_inc_revenue_between]
 
     @classmethod
-    def filter_by_4q_eps_between(cls, stocks, panel, area=(0.08,0.6)):
+    @log_time
+    def filter_by_4q_eps_between(cls, stocks, panel, area=(0.08,0.8)):
         '''
         ### 近四季盈余成长率介于8%至50%。(eps比值)
         '''
@@ -531,6 +533,7 @@ class ValueLib:
         for i in range(4):
             df_6 = panel.iloc[:, i, :]
             df_temp = df_6[(df_6['eps'] > area[0]) & (df_6['eps'] < area[1])]
+            log.info('季盈余成长率(eps)均值：%.2f', df_6['eps'].mean()) 
             if i == 0:
                 l6 = set(df_temp.index)
 
@@ -542,6 +545,7 @@ class ValueLib:
         return [s for s in stocks if s in stocks_4q_eps_bt]
 
     @classmethod
+    @log_time
     def get_quarter_fundamentals(cls, stocks, num):
         '''
         ### 获取多期财务数据内容
@@ -581,7 +585,8 @@ class ValueLib:
             stock for stock in df.index if df['statDate'][stock] == sd] for sd in stat_dates}
 
         q = query(valuation.code, valuation.code, valuation.circulating_market_cap, balance.total_current_assets, balance.total_current_liability,
-                indicator.roe, cash_flow.net_operate_cash_flow, cash_flow.net_invest_cash_flow, indicator.inc_revenue_year_on_year, indicator.eps
+                indicator.roe, cash_flow.net_operate_cash_flow, cash_flow.net_invest_cash_flow, indicator.inc_revenue_year_on_year, indicator.eps,
+                indicator.gross_profit_margin
                 )
 
         stat_date_panels = {sd: None for sd in stat_dates}
@@ -649,7 +654,7 @@ class ValueLib:
     @classmethod
     def fun_get_high_ps(cls,startDate=None):
         stock_list = cls.get_sorted_ps(startDate=startDate)
-        return stock_list[int(len(stock_list)*0.66):]
+        return stock_list[int(len(stock_list)*0.7):]
 
     @classmethod
     def filter_by_ps_not_in_high(cls,stocks):
@@ -663,50 +668,79 @@ class ValueLib:
     @classmethod
     def filter_by_in_low_ps(cls,stocks):
         low_stocks = cls.fun_get_low_ps()
-        if '600085.XSHG' in low_stocks:
-            print('600085.XSHG在filter_by_in_low_ps')
+        
         return [s for s in stocks if s in low_stocks]
 
     @classmethod
-    def filter_by_gross_profit_margin_bigger(cls,stocks,val=40):
+    @log_time
+    def filter_by_gross_profit_margin_bigger(cls,stocks,panel):
         '''
-        销售毛利率(%)(毛利/营业收入)≧40
+        近四季销售毛利率(%)(毛利/营业收入)≧median
         '''
-        gross_margin_stocks = BzUtil.financial_data_filter_bigger(stocks,indicator.gross_profit_margin,val)
-        log.info('销售毛利率(%)≧40:'+str(len(gross_margin_stocks)))
-        return BzUtil.filter_intersection(stocks, gross_margin_stocks)
+        # gross_margin_stocks = BzUtil.financial_data_filter_bigger(stocks,indicator.gross_profit_margin,val)
+        # log.info('销售毛利率(%)≧40:'+str(len(gross_margin_stocks)))
+        # return BzUtil.filter_intersection(stocks, gross_margin_stocks)
+        # df_gross = panel.loc['gross_profit_margin', 3, :]
+        # log.info('销售毛利率中位数:%.2f'%(df_gross['gross_profit_margin'].median()))
+        # df_gross_bigger_median = df_gross[df_gross['gross_profit_margin']>df_gross['gross_profit_margin'].median()]
+        l7 = set()
+        for i in range(4):
+            median = panel.loc['gross_profit_margin',i,:].median()
+            df_7 = panel.iloc[:, i, :]
+            print('销售毛利率中位数:%.2f'%(median))
+            df_temp = df_7[df_7['gross_profit_margin'] > 0.8*median]
+            
+            if i == 0:
+                l7 = set(df_temp.index)
 
+            if i > 0:
+                l_temp = df_temp.index
+                l7 = l7 & set(l_temp)
+        stocks_gross_big_median_stocks = set(l7)
+        print("近四季销售毛利率大于中位数(0.8):%d"%(len(stocks_gross_big_median_stocks)))
+        return [s for s in stocks if s in stocks_gross_big_median_stocks]
 
     @classmethod
-    def get_stock_list(cls, current_dt):
+    @log_time
+    def filter_stocks_for_buy(cls, current_dt):
         all_stocks = BzUtil.get_all_stocks()
-        panel_data = cls.get_quarter_fundamentals(all_stocks, 4)
-        g.panel = panel_data
+        # panel_data = cls.get_quarter_fundamentals(all_stocks, 4)
+        # g.panel = panel_data
+        if not hasattr(g,'panel') or g.panel is None:
+            g.panel = cls.get_quarter_fundamentals(all_stocks, 4)
+
+        panel_data = g.panel
 
         filter_stocks = cls.filter_by_4q_eps_between(all_stocks,panel_data)
         filter_stocks = cls.filter_by_4q_inc_revenue_between(filter_stocks,panel_data)
         filter_stocks = cls.filter_by_4quart_roe_bigger_mean(filter_stocks,panel_data)
         filter_stocks = cls.filter_by_5year_cf_neg(filter_stocks, current_dt)
         filter_stocks = cls.filter_by_last_quart_cr_bigger_mean(filter_stocks,panel_data)
-        filter_stocks = cls.filter_by_mkt_cap_bigger_mean(filter_stocks,panel_data)
+        log.info('eps,revenue,roe,cf,cr选出以下股票：')
+        BzUtil.print_with_name(filter_stocks)
         filter_stocks = BzUtil.filter_st(filter_stocks, current_dt)
         filter_stocks = BzUtil.remove_paused(filter_stocks)
+        filter_stocks = BzUtil.filter_financial_data_area(filter_stocks,factor=valuation.pe_ratio, area=(5,40))
+        filter_stocks = cls.filter_by_mkt_cap_bigger_mean(filter_stocks,panel_data)
+        log.info('考虑市值与pe<35选出以下股票：')
+        BzUtil.print_with_name(filter_stocks)
         # 增加高增长选股的毛利选股
-        filter_stocks = cls.filter_by_gross_profit_margin_bigger(filter_stocks)
+        # filter_stocks = cls.filter_by_gross_profit_margin_bigger(filter_stocks, panel_data)
+        # log.info('考虑毛利率，不考虑ps低过滤选出以下股票：')
+        # BzUtil.print_with_name(filter_stocks)
         # ps
         filter_stocks = cls.filter_by_in_low_ps(filter_stocks)
 
         return filter_stocks
     
     @classmethod
+    @log_time
     def filter_for_sell(cls, stocks, current_dt):
         all_stocks = BzUtil.get_all_stocks()
+        if not hasattr(g,'panel') or g.panel is None:
+            g.panel = cls.get_quarter_fundamentals(all_stocks, 4)
         
-        panel_data = None
-        if g.panel is not None:
-            panel_data = g.panel
-        else:
-            panel_data = cls.get_quarter_fundamentals(all_stocks, 4)
+        panel_data = g.panel
 
         filter_stocks = cls.filter_by_4q_eps_between(all_stocks,panel_data)
         filter_stocks = cls.filter_by_4q_inc_revenue_between(filter_stocks,panel_data)
@@ -716,7 +750,9 @@ class ValueLib:
         filter_stocks = cls.filter_by_mkt_cap_bigger_mean(filter_stocks,panel_data)
         filter_stocks = BzUtil.filter_st(filter_stocks, current_dt)
         # 增加高增长选股的毛利选股
-        filter_stocks = cls.filter_by_gross_profit_margin_bigger(filter_stocks)
+        # filter_stocks = cls.filter_by_gross_profit_margin_bigger(filter_stocks,panel_data)
+
+        filter_stocks = BzUtil.filter_financial_data_area(filter_stocks,factor=valuation.pe_ratio, area=(5,40))
         
         can_hold = [s for s in stocks if s in filter_stocks]
         
@@ -811,6 +847,275 @@ class StopManager():
 
         return filted_stocks + sorted_stocks
 
+
+
+class QuantileWraper:
+    def __init__(self):
+        self.pe_pb_df = None
+        self.quantile = None
+        self.index_code = '000300.XSHG'
+
+    def pretty_print(self,ndays=2):
+        if self.quantile is None:
+            log.info('没有指数PE分位数据。')
+            return
+        
+        import prettytable as pt
+
+        tb = pt.PrettyTable(["日期", "pe", "pb", "近" + str(g.quantile_long) + "年pe百分位高度"])
+        for i in range(1, ndays+1):
+            tb.add_row([str(self.pe_pb_df.index[-i]), 
+                        str(round(self.pe_pb_df['pe'].iat[-i],3)),
+                        str(round(self.pe_pb_df['pb'].iat[-i],3)), 
+                        str( round(self.quantile['quantile'].iat[-i],3))])
+        index_name = get_security_info(self.index_code).display_name
+        log.info('每日报告，' + index_name + '近'+ str(ndays)+'个交易日估值信息：\n' + str(tb))
+
+    def get_one_day_index_pe_pb_media(self,index_code, date):
+        stocks = get_index_stocks(index_code, date)
+        q = query(valuation.pe_ratio, 
+                valuation.pb_ratio
+                ).filter(valuation.pe_ratio != None,
+                        valuation.pb_ratio != None,
+                        valuation.code.in_(stocks))
+        df = get_fundamentals(q, date)
+        quantile = df.quantile([0.25, 0.75])
+        df_pe = df.pe_ratio[(df.pe_ratio > quantile.pe_ratio.values[0]) & (df.pe_ratio < quantile.pe_ratio.values[1])]
+        df_pb = df.pb_ratio[(df.pb_ratio > quantile.pb_ratio.values[0]) & (df.pb_ratio < quantile.pb_ratio.values[1])]
+        return date, df_pe.median(), df_pb.median()
+    
+    # 定义一个函数，计算每天的成份股的平均pe/pb
+    def iter_pe_pb(self, index_code, start_date, end_date):
+        from jqdata import get_trade_days
+        # 一个获取PE/PB的生成器
+        trade_date = get_trade_days(start_date=start_date, end_date=end_date)   
+        for date in trade_date:
+            yield self.get_one_day_index_pe_pb_media(index_code, date)
+
+    @log_time    
+    def get_pe_pb(self, index_code, end_date, old_pe_pb=None):
+        if old_pe_pb is not None:
+            start_date = old_pe_pb.index[-1]
+        else:
+            info = get_security_info(index_code)
+            start_date = info.start_date
+
+        dict_result = [{'date': value[0], 'pe': value[1], 'pb':value[2]} for value in self.iter_pe_pb(index_code, start_date, end_date)]
+
+        df_result = pd.DataFrame(dict_result)
+        df_result.set_index('date', inplace=True)
+
+        if old_pe_pb is None:
+            old_pe_pb = df_result
+        else:
+            old_pe_pb = pd.concat([old_pe_pb, df_result],sort=True)
+
+        return old_pe_pb
+
+    ## pe近7年百分位位置计算
+    @log_time
+    def get_quantile(self, pe_pb_data, p='pe', n=7.5):
+        """pe百分位计算。
+        Args:
+            p: 可以是 pe，也可以是 pb。
+            n: 指用于计算指数估值百分位的区间，如果是5指近5年数据。
+            pe_pb_data: 包含有 pe/pb 的 DataFrame。
+        Returns:
+            计算后的DataFrame。
+        """
+        _df = pe_pb_data.copy()
+        windows = self._year_to_days(n)  # 将时间取整数
+
+        _df['quantile'] = _df[p].rolling(windows).apply(lambda x: pd.Series(x).rank().iloc[-1] / 
+                                                    pd.Series(x).shape[0], raw=True)
+        _df.dropna(inplace=True)
+        return _df
+    
+    def _year_to_days(self, years):
+        # 这里的计算按一年244个交易日计算
+        return int(years * 244)
+    
+    def init_last_years(self, current_dt, years=7.5, index_code='000300.XSHG'):
+        start_date = DateHelper.add_ndays(current_dt,-self._year_to_days(years))
+        self.pe_pb_df = self.get_pe_pb(index_code,current_dt)
+        self.quantile = self.get_quantile(self.pe_pb_df,'pe',years)
+        self.index_code = index_code
+        return self.quantile
+    
+    @log_time
+    def try_get_today_quantile(self, current_dt, years=7.5, index_code='000300.XSHG'):
+        if self.quantile is None:
+            self.quantile = self.init_last_years(DateHelper.add_ndays(current_dt,-1),years,index_code)
+
+        last_day = self.quantile.index[-1]
+
+        if DateHelper.date_is_after(current_dt, last_day):
+            self.pe_pb_df = self.get_pe_pb(index_code=self.index_code,end_date=current_dt, old_pe_pb=self.pe_pb_df)
+            self.quantile = self.get_quantile(self.pe_pb_df,'pe',years)
+
+        return self.quantile['quantile'].iat[-1]
+
+class RiskLib:
+    @staticmethod
+    def __get_daily_returns(stock_or_list, freq, lag):
+        hStocks = history(lag, freq, 'close', stock_or_list, df=True)
+        dailyReturns = hStocks.resample('D').last().pct_change().fillna(value=0, method=None, axis=0).values
+    
+        return dailyReturns
+    
+    @staticmethod
+    def __level_to_probability(confidencelevel):
+        # 正太分布标准差的倍数对应的分布概率
+        a = (1 - 0.95)
+        if confidencelevel == 1.96:
+            a = (1 - 0.95)
+        elif confidencelevel == 2.06:
+            a = (1 - 0.96)
+        elif confidencelevel == 2.18:
+            a = (1 - 0.97)
+        elif confidencelevel == 2.34:
+            a = (1 - 0.98)
+        elif confidencelevel == 2.58:
+            a = (1 - 0.99)
+        elif confidencelevel == 5:
+            a = (1 - 0.99999)
+        
+        return a
+    
+    @staticmethod
+    def calc_stock_ES(stock, a=0.05, freq='1d', lag=120):
+        ES = 0
+        fac = lag * a
+        
+        dailyReturns = RiskLib.__get_daily_returns(stock, freq, lag)
+        dailyReturns_sort =  sorted(dailyReturns)
+        
+        count = 0
+        sum_value = 0
+        for i in range(len(dailyReturns_sort)):
+            if i < fac:
+                sum_value += dailyReturns_sort[i]
+                count += 1
+                
+        if count > 0:
+            ES = -(sum_value / fac)
+            
+        return ES[0]
+    
+    @staticmethod
+    def calc_stock_VaR(stock,confidentLevel=1.96,freq='1d',lag=120):
+        __portfolio_VaR = 0
+    
+        dailyReturns = RiskLib.__get_daily_returns(stock, freq, lag)
+        __portfolio_VaR = 1 * confidentLevel * np.std(dailyReturns)
+    
+        return __portfolio_VaR
+    
+    @staticmethod
+    def get_portfilo_ratio_ES(stocks,confidentLevel=1.96):
+        es_stocks = []
+        a = RiskLib.__level_to_probability(confidentLevel)
+        for s in stocks:
+            es = RiskLib.calc_stock_ES(s,a=a, freq='1d', lag=120)
+            es_stocks.append(es)
+        
+        max_es = max(es_stocks)
+        pos_stocks = list(max_es/np.array(es_stocks))
+        
+        total_positions = sum(pos_stocks)
+        __ratio = {}
+        
+        for i in range(len(stocks)):
+            stock = stocks[i]
+            if stock not in __ratio:
+                __ratio[stock] = 0
+                
+            ratio =  pos_stocks[i]/total_positions
+            __ratio[stock] += ratio
+        
+        return __ratio
+    
+    @staticmethod
+    def get_portfilo_ratio_Var(stocks,confidentLevel=1.96):
+        var_stocks = []
+        for s in stocks:
+            vaR = RiskLib.calc_stock_VaR(s,confidentLevel=confidentLevel,freq='1d',lag=120)   
+            var_stocks.append(vaR)
+        
+        max_var = max(var_stocks)
+        pos_stocks = list(max_var/np.array(var_stocks))
+        
+        total_positions = sum(pos_stocks)
+        __ratio = {}
+        
+        for i in range(len(stocks)):
+            stock = stocks[i]
+            if stock not in __ratio:
+                __ratio[stock] = 0
+                
+            ratio =  pos_stocks[i]/total_positions
+            __ratio[stock] += ratio
+        
+        return __ratio
+    
+    @staticmethod
+    def get_portfilo_es(portfolio_ratios,confidentLevel=1.96):
+        hStocks = history(1, '1d', 'close', list(portfolio_ratios.keys()), df=False)
+        __portfolio_es = 0
+        a = RiskLib.__level_to_probability(confidentLevel)
+        for stock in portfolio_ratios:
+            s_es = RiskLib.calc_stock_ES(stock, a=0.05, freq='1d', lag=120)  # 盈亏比率
+            currVaR = hStocks[stock] * s_es # 每股盈亏 = 价格 × 比率
+            perAmount = 1 * portfolio_ratios[stock] / hStocks[stock] # 每份钱按比例投到该股能买的股票数量
+            __portfolio_es += perAmount * currVaR
+        
+        return __portfolio_es
+    
+    @staticmethod
+    def get_portfilo_VaR(portfolio_ratios,confidentLevel=1.96):
+        hStocks = history(1, '1d', 'close', list(portfolio_ratios.keys()), df=False)
+        __portfolio_VaR = 0
+        for stock in portfolio_ratios:
+            s_vaR = RiskLib.calc_stock_VaR(stock,confidentLevel=confidentLevel,freq='1d',lag=120)  # 盈亏比率
+            currVaR = hStocks[stock] * s_vaR # 每股盈亏 = 价格 × 比率
+            perAmount = 1 * portfolio_ratios[stock] / hStocks[stock] # 每份前按比例投到该股能买的股票数量
+            __portfolio_VaR += perAmount * currVaR
+        
+        return __portfolio_VaR
+    
+    @staticmethod
+    def calc_portfilo_es_value_by_risk_money(risk_money,portfolio_ratios,confidentLevel=1.96):
+        portfolio_es = RiskLib.get_portfilo_es(portfolio_ratios=portfolio_ratios,confidentLevel=confidentLevel)
+        return risk_money/portfolio_es
+    
+    @staticmethod
+    def calc_portfilo_var_value_by_risk_money(risk_money,portfolio_ratios,confidentLevel=1.96):
+        portfolio_vaR = RiskLib.get_portfilo_VaR(portfolio_ratios=portfolio_ratios,confidentLevel=confidentLevel)
+        return risk_money/portfolio_vaR
+
+    @classmethod
+    def formula_risk(cls, quantile, rmax=0.08, rmin=0.005):
+        # risk 以0为顶点，开口向下的抛物线，quantile>0.85后，取最小值
+        q_mid = 0
+        q_min = -0.85
+        q_max = q_mid + q_mid - q_min
+    
+        if quantile > q_max:
+            return rmin
+    
+        b = (rmax-rmin)/(q_max*q_max)
+    
+        return abs(rmax - b*quantile*quantile)
+    
+    @classmethod
+    def ajust_risk(cls, context):
+        # 根据当前PE的分位、当前盈亏，调整risk。
+        quantile = g.quantile.try_get_today_quantile(context.current_dt)
+
+        risk = cls.formula_risk(quantile,rmax=g.max_risk,rmin=g.min_risk)
+        log.info('quantile[%f] rmax[%f] rmin[%f] new risk[%f]'%(quantile, g.max_risk,g.min_risk,risk))
+        return risk
+
 class Trader():
     def __init__(self, context):
         self.context = context
@@ -848,7 +1153,7 @@ class Trader():
         if self.positions_num() >= g.stock_num:
             log.info('持仓数量大于限仓数量，只调仓不开仓。')
             buys = list(self.context.portfolio.positions.keys())
-            self.trade_equal(buys)
+            self.trade_with_risk_ctrl(buys)
             return
         
         if DateHelper.to_date(self.context.current_dt).day >= 25:
@@ -864,7 +1169,7 @@ class Trader():
             return
 
         # 检查止损
-        # g.stopper.check_stop(self.context)
+        g.stopper.check_stop(self.context)
         holds = list(self.context.portfolio.positions.keys())
 
         can_hold_stocks = ValueLib.filter_for_sell(holds, self.context.current_dt)
@@ -918,7 +1223,8 @@ class Trader():
         if len(buys) <= 0:
             return
         
-        self.trade_equal(buys)
+        # self.trade_equal(buys)
+        self.trade_with_risk_ctrl(buys)
     
     def trade_equal(self,buys):
         # 等权买入
@@ -931,14 +1237,62 @@ class Trader():
         for s in buys:
             order_target_value(s, cost)
 
+    def ajust_hold_positions(self,portfilo_ratio,will_spend):
+        need_sells = {}
+        need_buys = {}
 
-def get_check_stocks_sort(context, check_out_lists):
-    df = get_fundamentals(query(valuation.circulating_cap, valuation.pe_ratio, valuation.code).filter(
-        valuation.code.in_(check_out_lists)), date=context.previous_date)
-    # asc值为0，从大到小
-    df = df.sort_values('circulating_cap', ascending=False)
-    out_lists = list(df['code'].values)
-    return out_lists
+        for s in self.context.portfolio.positions:
+            if s not in portfilo_ratio:
+                log.info('持仓[%s]不再组合中，全部清空。'%(s))
+                order_target(s,0)
+                continue
+
+            ratio = portfilo_ratio[s]
+            cost = will_spend * ratio
+            p = self.context.portfolio.positions[s]
+            if p.value > cost + p.price * 100:
+                need_sells[s] = cost
+            elif p.value < cost - p.price * 100:
+                need_buys[s] = cost
+            else:
+                log.info('持仓[%s]变动很小，不需要调整。'%(s))
+        
+        # 先处理卖
+        for s in need_sells:
+            order_target_value(s,need_sells[s])
+        
+        for s in need_buys:
+            order_target_value(s,need_buys[s])
+    
+    def buy_stocks_by_ratio(self,buy_stocks,portfilo_ratio,total_cost):
+        for s in buy_stocks:
+            ratio = portfilo_ratio[s]
+            cost = total_cost * ratio
+            order_target_value(s,cost)
+
+
+    def trade_with_risk_ctrl(self,buys):
+        portfilo_ratio = RiskLib.get_portfilo_ratio_ES(buys, g.confidentLevel)
+        portfilo_VaR = RiskLib.get_portfilo_VaR(portfolio_ratios=portfilo_ratio,confidentLevel=g.confidentLevel)
+        portfilo_es = RiskLib.get_portfilo_es(portfolio_ratios=portfilo_ratio,confidentLevel=g.confidentLevel)
+
+        risk_money = self.context.portfolio.total_value * g.risk
+
+        vaR_value = RiskLib.calc_portfilo_var_value_by_risk_money(risk_money,portfilo_ratio,confidentLevel=g.confidentLevel)
+        es_value = RiskLib.calc_portfilo_es_value_by_risk_money(risk_money*1.5,portfilo_ratio,confidentLevel=g.confidentLevel)
+        risk_value = min(vaR_value,es_value)
+
+        buy_value = min(risk_value,self.context.portfolio.total_value)
+
+        log.info('portfilo_ratio:',portfilo_ratio,' buy_value:', buy_value,' g.risk:', g.risk)
+        
+        self.ajust_hold_positions(portfilo_ratio,buy_value)
+
+        need_buys = BzUtil.filter_without(list(portfilo_ratio.keys()),list(self.context.portfolio.positions.keys()))
+
+        self.buy_stocks_by_ratio(need_buys,portfilo_ratio,buy_value)
+
+
 
 
 def initialize(context):
@@ -961,14 +1315,17 @@ def initialize(context):
     # 每月第5个交易日进行操作
     # 开盘前运行
 
-    # run_monthly(before_market_open, 5, time='before_open',
-    #             reference_security='000300.XSHG')
+    run_monthly(adjust_risk_before_market_open, 5, time='before_open',
+                reference_security='000300.XSHG')
     # # 开盘时运行
     # run_monthly(market_open, 5, time='open', reference_security='000300.XSHG')
+    
+    run_daily(before_market_open,time='9:00', reference_security='000300.XSHG')
+    run_daily(market_open, time='9:30', reference_security='000300.XSHG')
 
-    run_daily(before_market_open, time='before_open', reference_security='000300.XSHG') 
+    # run_daily(before_market_open, time='before_open', reference_security='000300.XSHG') 
       # 开盘时运行
-    run_daily(market_open, time='open', reference_security='000300.XSHG')
+    # run_daily(check_sell_when_market_open, time='9:30', reference_security='000300.XSHG')
 
     run_daily(after_market_close, time='after_close', reference_security='000300.XSHG')
 
@@ -986,19 +1343,35 @@ def after_code_changed(context):
     g.stopper.stop_ratio = 0.08 # 跌8%止损
     g.stopper.stop_ndays = 20
 
+    # 风险敞口的最大最小值
+    g.risk = 0.03 # 风险敞口
+    g.max_risk, g.min_risk = 0.04,0.01
+    g.confidentLevel = 1.96
+
+    g.quantile_long = 7.5 # 检查的pe分位的年数
+
+    g.quantile = None
     
 
+    
+def get_check_stocks_sort(context, check_out_lists):
+    df = get_fundamentals(query(valuation.circulating_cap, valuation.pe_ratio, valuation.code).filter(
+        valuation.code.in_(check_out_lists)), date=context.previous_date)
+    # asc值为0，从大到小
+    df = df.sort_values('circulating_cap', ascending=False)
+    out_lists = list(df['code'].values)
+    return out_lists
 
 def before_market_open(context):
     # 获取要操作的股票列表
-    # temp_list = get_stock_list(context)
+    # temp_list = filter_stocks_for_buy(context)
 
     # 获取满足条件的股票列表
-    temp_list = ValueLib.get_stock_list(context.current_dt)
+    temp_list = ValueLib.filter_stocks_for_buy(context.current_dt)
     log.info('满足条件的股票有%s只' % len(temp_list))
     # 按市值进行排序
     g.stocks = get_check_stocks_sort(context, temp_list)
-    # g.stocks = g.stopper.filter_and_sort(g.stocks, context.current_dt)
+    g.stocks = g.stopper.filter_and_sort(g.stocks, context.current_dt)
     # g.stocks = BzUtil.filter_without(g.buy_list,['600276.XSHG']) # 去掉恒瑞
 
 # 开盘时运行函数
@@ -1012,6 +1385,19 @@ def market_open(context):
 
 def after_market_close(context):
     Trader.print_holdings(context)
+    g.panel = None
+
+# def check_sell_when_market_open(context):
+#     trader = Trader(context)
+#     trader.check_for_sell()
+
+def adjust_risk_before_market_open(context):
+    if not hasattr(g,'quantile') or g.quantile is None:
+        g.quantile = QuantileWraper()
+    
+    g.quantile.init_last_years(context.current_dt, years=g.quantile_long)
+
+    g.risk = RiskLib.ajust_risk(context)
 
 
 
