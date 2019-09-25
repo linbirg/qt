@@ -74,14 +74,6 @@ class DateHelper:
         is_after = one_date > other_date
         return is_after
 
-    @classmethod
-    def days_between(cls, one,other):
-        one_date = cls.to_date(one)
-        other_date = cls.to_date(other)
-        
-        interval = one_date - other_date
-        return interval.days
-
 class BzUtil():
     # 去极值
     @staticmethod
@@ -616,7 +608,7 @@ class ValueLib:
 
             stat_date_panels[sd] = panel.transpose(2, 0, 1)
 
-        final_panel = pd.concat(stat_date_panels.values(), axis=2, sort=False)
+        final_panel = pd.concat(stat_date_panels.values(), axis=2)
 
         return final_panel.dropna(axis=2)
 
@@ -855,17 +847,6 @@ class StopManager():
 
         return filted_stocks + sorted_stocks
 
-    def get_latest_stopped_stocks(self, current_dt, max_days=20):
-        latest_stoped = []
-        for s in self.blacks.keys():
-            if self.calc_stock_stopped_days(current_dt,self.blacks[s]) <= max_days:
-                latest_stoped.append(s)
-
-        return latest_stoped
-    
-    def calc_stock_stopped_days(self,stock,current_dt):
-        return DateHelper.days_between(current_dt, self.blacks[stock])
-
 
 
 class QuantileWraper:
@@ -927,7 +908,7 @@ class QuantileWraper:
         if old_pe_pb is None:
             old_pe_pb = df_result
         else:
-            old_pe_pb = pd.concat([old_pe_pb, df_result],sort=True)
+            old_pe_pb = pd.concat([old_pe_pb, df_result])
 
         return old_pe_pb
 
@@ -945,8 +926,8 @@ class QuantileWraper:
         _df = pe_pb_data.copy()
         windows = self._year_to_days(n)  # 将时间取整数
 
-        _df['quantile'] = _df[p].rolling(windows).apply(lambda x: pd.Series(x).rank().iloc[-1] / 
-                                                    pd.Series(x).shape[0], raw=True)
+        _df['quantile'] = pd.rolling_apply(_df[p], windows,lambda x: pd.Series(x).rank().iloc[-1] / 
+                                                    pd.Series(x).shape[0])
         _df.dropna(inplace=True)
         return _df
     
@@ -973,12 +954,13 @@ class QuantileWraper:
             self.quantile = self.get_quantile(self.pe_pb_df,'pe',years)
 
         return self.quantile['quantile'].iat[-1]
+        
 
 class RiskLib:
     @staticmethod
     def __get_daily_returns(stock_or_list, freq, lag):
         hStocks = history(lag, freq, 'close', stock_or_list, df=True)
-        dailyReturns = hStocks.resample('D').last().pct_change().fillna(value=0, method=None, axis=0).values
+        dailyReturns = hStocks.resample('D','last').pct_change().fillna(value=0, method=None, axis=0).values
     
         return dailyReturns
     
@@ -1134,41 +1116,6 @@ class RiskLib:
         risk = cls.formula_risk(quantile,rmax=g.max_risk,rmin=g.min_risk)
         log.info('quantile[%f] rmax[%f] rmin[%f] new risk[%f]'%(quantile, g.max_risk,g.min_risk,risk))
         return risk
-    
-    @classmethod
-    def risk_formula_by_stop(cls, r,i,rmax=0.04,rmin=0.01,max_days=20):
-        a,b = 1,1
-        if i == 0:
-            a = 2/3
-            b = 1
-            
-        if i > 0 and i < max_days:
-            a = 1
-            b = 1.06
-        
-        if i > max_days:
-            a = 1
-            b = 1
-        print(r,a,b)
-        ry = r * a * b
-        if ry > rmax:
-            ry = rmax
-        
-        if ry < rmin:
-            ry = rmin
-            
-        return ry
-
-    @classmethod
-    def ajust_by_stop(cls,stopper,current_dt,risk,rmax=0.04,rmin=0.01, max_days=20):
-        stop_stocks = stopper.get_latest_stopped_stocks(current_dt)
-
-        for s in stop_stocks:
-            ndays = stopper.calc_stock_stopped_days(s,current_dt)
-            risk = risk * cls.risk_formula_by_stop(risk,ndays,rmax=rmax,rmin=rmin, max_days=max_days)
-        
-        return risk
-
 
 class Trader():
     def __init__(self, context):
@@ -1376,7 +1323,7 @@ def initialize(context):
     
     run_daily(before_market_open,time='9:00', reference_security='000300.XSHG')
     run_daily(market_open, time='9:30', reference_security='000300.XSHG')
-
+    
     run_daily(check_stop_at_noon, time='14:30', reference_security='000300.XSHG')
 
     # run_daily(before_market_open, time='before_open', reference_security='000300.XSHG') 
@@ -1390,7 +1337,7 @@ def initialize(context):
 
 @log_time
 def after_code_changed(context):
-    g.stock_num = 5
+    g.stock_num = 3
     
  
     g.stocks = None
@@ -1414,7 +1361,7 @@ def get_check_stocks_sort(context, check_out_lists):
     df = get_fundamentals(query(valuation.circulating_cap, valuation.pe_ratio, valuation.code).filter(
         valuation.code.in_(check_out_lists)), date=context.previous_date)
     # asc值为0，从大到小
-    df = df.sort_values('circulating_cap', ascending=True)
+    df = df.sort('circulating_cap', ascending=True)
     out_lists = list(df['code'].values)
     return out_lists
 
@@ -1454,13 +1401,8 @@ def adjust_risk_before_market_open(context):
     g.quantile.init_last_years(context.current_dt, years=g.quantile_long)
 
     g.risk = RiskLib.ajust_risk(context)
+    
 
 def check_stop_at_noon(context):
     g.stopper.check_stop(context)
-
-    g.risk = RiskLib.ajust_by_stop(g.stopper,context.current_dt,g.risk,rmax=g.max_risk, rmin=g.min_risk,max_days=g.stopper.stop_ndays)
-
-
-
-
 
