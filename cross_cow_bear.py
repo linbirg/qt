@@ -657,12 +657,12 @@ class ValueLib:
     @classmethod
     def fun_get_low_ps(cls, startDate=None):
         stock_list = cls.get_sorted_ps(startDate=startDate)
-        return stock_list[:int(len(stock_list)*0.4)]
+        return stock_list[:int(len(stock_list)*0.45)]
     
     @classmethod
     def fun_get_high_ps(cls,startDate=None):
         stock_list = cls.get_sorted_ps(startDate=startDate)
-        return stock_list[int(len(stock_list)*0.7):]
+        return stock_list[int(len(stock_list)*0.85):]
 
     @classmethod
     def filter_by_ps_not_in_high(cls,stocks):
@@ -857,8 +857,8 @@ class StopManager():
 
     def get_latest_stopped_stocks(self, current_dt, max_days=20):
         latest_stoped = []
-        for s in self.blacks.keys():
-            if self.calc_stock_stopped_days(current_dt,self.blacks[s]) <= max_days:
+        for s in self.blacks:
+            if self.calc_stock_stopped_days(s, current_dt) <= max_days:
                 latest_stoped.append(s)
 
         return latest_stoped
@@ -898,7 +898,7 @@ class QuantileWraper:
                         valuation.pb_ratio != None,
                         valuation.code.in_(stocks))
         df = get_fundamentals(q, date)
-        quantile = df.quantile([0.25, 0.75])
+        quantile = df.quantile([0.1, 0.9])
         df_pe = df.pe_ratio[(df.pe_ratio > quantile.pe_ratio.values[0]) & (df.pe_ratio < quantile.pe_ratio.values[1])]
         df_pb = df.pb_ratio[(df.pb_ratio > quantile.pb_ratio.values[0]) & (df.pb_ratio < quantile.pb_ratio.values[1])]
         return date, df_pe.median(), df_pb.median()
@@ -1136,37 +1136,48 @@ class RiskLib:
         return risk
     
     @classmethod
-    def risk_formula_by_stop(cls, r,i,rmax=0.04,rmin=0.01,max_days=20):
-        a,b = 1,1
-        if i == 0:
-            a = 2/3
-            b = 1
+    def risk_formula_by_stop(cls, nday, max_days=20):
+        def formula(nday,max_days):
+            a,b = 1,1
+            if nday == 0:
+                a = 2/3
+                b = 1
+
+            if nday > 0 and nday < max_days:
+                a = 1
+                b = 1.025
+
+            if nday > max_days:
+                a = 1
+                b = 1
+
+            ry = a * b
+            # print('(a,b,ry)',(a,b,ry))
+            return ry
+
+        rate = formula(0, max_days)
+        for i in range(1,nday+1):
+            rate = rate * formula(i,max_days)
             
-        if i > 0 and i < max_days:
-            a = 1
-            b = 1.06
-        
-        if i > max_days:
-            a = 1
-            b = 1
-        print(r,a,b)
-        ry = r * a * b
-        if ry > rmax:
-            ry = rmax
-        
-        if ry < rmin:
-            ry = rmin
-            
-        return ry
+        return rate
 
     @classmethod
     def ajust_by_stop(cls,stopper,current_dt,risk,rmax=0.04,rmin=0.01, max_days=20):
+        # 幂等性
         stop_stocks = stopper.get_latest_stopped_stocks(current_dt)
-
+        rate = 1
         for s in stop_stocks:
             ndays = stopper.calc_stock_stopped_days(s,current_dt)
-            risk = risk * cls.risk_formula_by_stop(risk,ndays,rmax=rmax,rmin=rmin, max_days=max_days)
+            rate = rate * cls.risk_formula_by_stop(ndays, max_days=max_days)
         
+        risk = risk * rate
+        if risk > rmax:
+            risk = rmax
+        
+        if risk < rmin:
+            risk = rmin
+
+        print('new risk:%.3f'%(risk))
         return risk
 
 
@@ -1443,6 +1454,9 @@ def after_market_close(context):
     Trader.print_holdings(context)
     g.panel = None
 
+    if hasattr(g,'quantile') and g.quantile is not None:
+        g.quantile.pretty_print()
+
 # def check_sell_when_market_open(context):
 #     trader = Trader(context)
 #     trader.check_for_sell()
@@ -1454,13 +1468,11 @@ def adjust_risk_before_market_open(context):
     g.quantile.init_last_years(context.current_dt, years=g.quantile_long)
 
     g.risk = RiskLib.ajust_risk(context)
+    
 
 def check_stop_at_noon(context):
     g.stopper.check_stop(context)
 
     g.risk = RiskLib.ajust_by_stop(g.stopper,context.current_dt,g.risk,rmax=g.max_risk, rmin=g.min_risk,max_days=g.stopper.stop_ndays)
-
-
-
 
 

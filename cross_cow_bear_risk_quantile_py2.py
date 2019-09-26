@@ -1095,7 +1095,7 @@ class RiskLib:
         return risk_money/portfolio_vaR
 
     @classmethod
-    def formula_risk(cls, quantile, rmax=0.08, rmin=0.005):
+    def formula_risk(cls, quantile, rmax=0.04, rmin=0.01):
         # risk 以0为顶点，开口向下的抛物线，quantile>0.85后，取最小值
         q_mid = 0
         q_min = -0.85
