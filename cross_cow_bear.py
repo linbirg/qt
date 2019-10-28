@@ -760,7 +760,7 @@ class ValueLib:
         # 增加高增长选股的毛利选股
         # filter_stocks = cls.filter_by_gross_profit_margin_bigger(filter_stocks,panel_data)
 
-        filter_stocks = BzUtil.filter_financial_data_area(filter_stocks,factor=valuation.pe_ratio, area=(5,40))
+        filter_stocks = BzUtil.filter_financial_data_area(filter_stocks,factor=valuation.pe_ratio, area=(5,60))
         
         can_hold = [s for s in stocks if s in filter_stocks]
         
@@ -1159,6 +1159,7 @@ class RiskLib:
         for i in range(1,nday+1):
             rate = rate * formula(i,max_days)
             
+        print('第[%d]天rate[%.3f]'%(nday,rate))   
         return rate
 
     @classmethod
@@ -1441,6 +1442,8 @@ def before_market_open(context):
     g.stocks = g.stopper.filter_and_sort(g.stocks, context.current_dt)
     # g.stocks = BzUtil.filter_without(g.buy_list,['600276.XSHG']) # 去掉恒瑞
 
+    g.risk = RiskLib.ajust_by_stop(g.stopper,context.current_dt,g.risk,rmax=g.max_risk, rmin=g.min_risk,max_days=g.stopper.stop_ndays)
+
 # 开盘时运行函数
 
 
@@ -1457,9 +1460,6 @@ def after_market_close(context):
     if hasattr(g,'quantile') and g.quantile is not None:
         g.quantile.pretty_print()
 
-# def check_sell_when_market_open(context):
-#     trader = Trader(context)
-#     trader.check_for_sell()
 
 def adjust_risk_before_market_open(context):
     if not hasattr(g,'quantile') or g.quantile is None:
@@ -1472,7 +1472,5 @@ def adjust_risk_before_market_open(context):
 
 def check_stop_at_noon(context):
     g.stopper.check_stop(context)
-
-    g.risk = RiskLib.ajust_by_stop(g.stopper,context.current_dt,g.risk,rmax=g.max_risk, rmin=g.min_risk,max_days=g.stopper.stop_ndays)
 
 
